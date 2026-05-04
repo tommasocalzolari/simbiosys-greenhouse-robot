@@ -1,0 +1,43 @@
+repositories:
+  # rhaschke/colcon-top-level-workspace:
+  #   type: git
+  #   url: https://github.com/rhaschke/colcon-top-level-workspace.git
+  #   version: main
+
+  # 'real' robot only?
+
+  # rplidar_ros:
+  #   type: git
+  #   url: https://github.com/Slamtec/rplidar_ros.git
+  #   version: ros2
+  # kas-lab/mirte_navigation:
+  #   type: git
+  #   url: https://github.com/kas-lab/mirte_navigation.git
+  #   version: physical_robot
+  # ros2_astra_camera:
+  #   type: git
+  #   url: https://github.com/ArendJan/ros2_astra_camera.git
+  #   version: fix-ros-jammy
+
+  # simulation
+
+  mirte-gazebo:
+    type: git
+    url: https://github.com/mirte-robot/mirte-gazebo.git
+    version: main
+  gazebo_grasp_fix:
+    type: git
+    url: https://github.com/RCPRG-ros-pkg/gazebo-grasp-plugin.git
+    version: humble-grasp-fix
+  mirte-ros-packages:
+    type: git
+    url: https://github.com/mirte-robot/mirte-ros-packages.git
+    version: develop
+
+  # shared
+  # TODO: switch to ros-controllers/mecanum_drive_controller
+  clearpath_mecanum_drive_controller:
+    type: git
+    url: https://github.com/clearpathrobotics/clearpath_mecanum_drive_controller.git
+    # 'main' branch, commit: "Merge pull request #4 from clearpathrobotics/fix/on_deactivate"
+    version: 5b001053d0de88e28f0fecc8315a55eadeee9522

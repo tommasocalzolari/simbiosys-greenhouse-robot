@@ -1,0 +1,8 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+src/*
+build
+install
+log
+.DS_Store
