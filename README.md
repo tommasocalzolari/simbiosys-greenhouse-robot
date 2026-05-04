@@ -17,7 +17,7 @@ Then, in a terminal (this shows the Linux instructions, macOS would be similar, 
 ```shell
 # clone this repository somewhere. Here I do it in $HOME, but that is not
 # required. The workspace could be anywhere
-git clone https://gitlab.tudelft.nl/cor/ro47007/ro47007_mirte_ws.git $HOME/ro47007_mirte_ws
+git clone https://gitlab.tudelft.nl/cor/ro47007/2026/mdp_mirte_ws.git $HOME/ro47007_mirte_ws
 cd $HOME/ro47007_mirte_ws
 
 # let pixi do its thing (this could take a while)
