@@ -17,12 +17,14 @@ Then, in a terminal (this shows the Linux instructions, macOS would be similar, 
 ```shell
 # clone this repository somewhere. Here I do it in $HOME, but that is not
 # required. The workspace could be anywhere
-git clone https://gitlab.tudelft.nl/cor/ro47007/2026/mdp_mirte_ws.git $HOME/ro47007_mirte_ws
+git clone https://gitlab.tudelft.nl/cor/ro47007/2026/group_06/main-simbiosys.git $HOME/ro47007_mirte_ws
 cd $HOME/ro47007_mirte_ws
 
 # let pixi do its thing (this could take a while)
 pixi install
 ```
+
+note: I changed the https to reference our own fork instead of theirs, hopefully it works. (tommi)
 
 if there were no errors, try fetching the packages (or `pixi run fetch` from within `ro47007_mirte_ws`):
 
