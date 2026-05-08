@@ -1,0 +1,8 @@
+{
+    "build":
+    {
+        "merge-install": true,
+        "event-handlers": ["parallel_status-", "console_cohesion+", "summary+"],
+        "cmake-args": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DBUILD_TESTING=OFF", "-GNinja"],
+    }
+}

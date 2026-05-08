@@ -1,11 +1,13 @@
-# SimBioSys
+# SimBioSys MIRTE ROS 2 Workspace
 
 Official Group 06 repository for the SimBioSys ROS 2 workspace.
 
-## Reuse-First MIRTE Strategy
+This repository keeps the Pixi/colcon MIRTE workspace setup from the course
+template and adds our `simbiosys_*` packages on top. The project direction is
+reuse-first: our code should wrap and coordinate existing MIRTE and ROS 2
+packages instead of replacing them.
 
-This repository keeps our `simbiosys_*` packages, but they should wrap and
-coordinate existing MIRTE and ROS 2 packages instead of replacing them.
+## Reuse-First MIRTE Strategy
 
 We reuse:
 
@@ -65,7 +67,35 @@ ros2 launch simbiosys_bringup ui_system.launch.py
 | `simbiosys_ui` | Terminal status UI and dummy dashboard data |
 | `simbiosys_bringup` | Launch files and topic config for the three modes |
 
-## Quickstart Commands
+## Setup
+
+If you do not have Pixi, install it from the
+[Pixi installation guide](https://pixi.prefix.dev/latest/installation/).
+
+Clone this repository:
+
+```bash
+git clone https://gitlab.tudelft.nl/cor/ro47007/2026/group_06/main-simbiosys.git $HOME/ro47007_mirte_ws
+cd $HOME/ro47007_mirte_ws
+```
+
+Install the Pixi environment:
+
+```bash
+pixi install
+```
+
+Fetch the MIRTE/ROS package repositories listed in `repos.repos`:
+
+```bash
+pixi run vcs import --input repos.repos src
+```
+
+Ignore MIRTE packages that are not needed for this laptop-side workspace:
+
+```bash
+touch src/mirte-ros-packages/mirte_{bringup,telemetrix_cpp,teleop,test,zenoh_setup}/COLCON_IGNORE
+```
 
 Build:
 
@@ -75,6 +105,15 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build
 source install/setup.bash
 ```
+
+Clean build artifacts when needed:
+
+```bash
+pixi run ws-clean
+pixi run clean-build
+```
+
+## Quickstart Commands
 
 Teleop:
 
@@ -98,6 +137,31 @@ MIRTE MoveIt, when installed:
 
 ```bash
 ros2 launch mirte_moveit_config mirte_moveit.launch.py use_sim_time:=True
+```
+
+## Physical Robot
+
+Connect to the MIRTE Master via Wi-Fi AP or Ethernet. On the robot, set the ROS
+domain id and restart ROS:
+
+```bash
+export ROS_DOMAIN_ID=1
+sudo service mirte-ros restart
+```
+
+In each laptop Pixi shell, use the same domain id and allow network discovery:
+
+```bash
+export ROS_DOMAIN_ID=1
+export ROS_LOCALHOST_ONLY=0
+ros2 daemon stop
+ros2 daemon start
+```
+
+Verify that robot topics are visible:
+
+```bash
+ros2 topic list
 ```
 
 ## Topic Verification Checklist
@@ -141,3 +205,19 @@ Before opening a merge request, build locally and mention any manual robot or
 simulation steps you used.
 
 More practical notes are in [docs/](docs/README.md).
+
+## Troubleshooting
+
+- Python build problems: fully deactivate Anaconda or other virtual Python
+  environment managers before setting up this repository.
+- Shells other than Bash: source the matching setup file in `install`, such as
+  `setup.zsh`.
+- macOS blocked binaries: approve the Pixi-installed binary in System Settings,
+  then rerun the command.
+- Build problems: inspect the failing package output and use a clean build when
+  cache state is suspicious.
+- Pixi environment problems: run `pixi clean`, then `pixi install`.
+- Missing packages in Pixi: add available ROS packages with commands such as
+  `pixi add ros-humble-turtlesim`.
+- Inconsistent group results: compare `git diff` and keep `pixi.lock` shared so
+  everyone installs the same dependency versions.

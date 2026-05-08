@@ -1,3 +1,7 @@
+# Pixi environments
+.pixi/*
+!.pixi/config.toml
+
 # Colcon workspace outputs
 /build/
 /install/
@@ -6,6 +10,9 @@
 # Python cache files
 __pycache__/
 *.py[cod]
+
+# Local machine files
+.DS_Store
 
 # Local editor and agent state
 .codex/
