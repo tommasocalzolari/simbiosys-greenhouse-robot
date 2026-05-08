@@ -1,0 +1,8 @@
+geometry_msgs/Pose target_pose
+string motion_type
+---
+bool success
+string message
+---
+string current_step
+float32 progress

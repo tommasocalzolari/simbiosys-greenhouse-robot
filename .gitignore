@@ -1,0 +1,12 @@
+# Colcon workspace outputs
+/build/
+/install/
+/log/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Local editor and agent state
+.codex/
+.vscode/
