@@ -17,7 +17,9 @@ src/simbiosys_bringup/config/simulation_topics.yaml
 | Laser scan | `/scan` |
 | Odometry | `/odom` |
 | Map | `/map` |
-| Camera image | `/camera/image_raw` |
+| Color camera image | `/camera/color/image_raw` |
+| Depth camera image | `/camera/depth/image_raw` |
+| Gripper camera image | `/gripper_camera/image_raw` |
 | Task status | `simbiosys/task_status` |
 | Flower data | `simbiosys/flower_data` |
 
