@@ -19,6 +19,7 @@ src/simbiosys_bringup/config/simulation_topics.yaml
 | Map | `/map` |
 | Color camera image | `/camera/color/image_raw` |
 | Depth camera image | `/camera/depth/image_raw` |
+| Depth point cloud | `/camera/depth/points` |
 | Gripper camera image | `/gripper_camera/image_raw` |
 | Task status | `simbiosys/task_status` |
 | Flower data | `simbiosys/flower_data` |
