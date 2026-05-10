@@ -4,14 +4,16 @@
   <name>simbiosys_mapping</name>
   <version>0.0.0</version>
   <description>Lightweight mapping wrappers and slam_toolbox configuration for SimBioSys.</description>
-  <maintainer email="group06@example.com">SimBioSys Group 06</maintainer>
+  <maintainer email="tcalzolari@tudelft.nl">SimBioSys Group 06 - Tommaso Calzolari</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

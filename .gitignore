@@ -7,6 +7,16 @@
 /install/
 /log/
 
+# External repositories fetched into src/ by vcs/pixi
+/src/clearpath_mecanum_drive_controller/
+/src/gazebo_grasp_fix/
+/src/mirte-gazebo/
+/src/mirte-ros-packages/
+
+# Generated TF inspection outputs
+/frames_*.gv
+/frames_*.pdf
+
 # Python cache files
 __pycache__/
 *.py[cod]
