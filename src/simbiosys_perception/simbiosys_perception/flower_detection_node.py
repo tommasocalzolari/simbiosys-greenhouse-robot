@@ -15,10 +15,13 @@ from simbiosys_interfaces.msg import FlowerData
 class FlowerDetection:
     bbox: tuple[int, int, int, int]
     top_pixel: tuple[int, int]
+    color_label: str
+    contour_area: float
+    convexity_ratio: float
 
 
 class FlowerDetectionNode(Node):
-    """Detect tulip flowers and estimate their height from aligned depth."""
+    """Detect Dahlia flowers and estimate their height from aligned depth."""
 
     def __init__(self) -> None:
         super().__init__("flower_detection_node")
@@ -26,11 +29,18 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
         self.declare_parameter("depth_camera_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
-        self.declare_parameter("min_contour_area", 500.0)
-        self.declare_parameter("morph_kernel_size", 5)
+        self.declare_parameter("min_contour_area", 5000.0)
+        self.declare_parameter("morph_kernel_size", 7)
+        self.declare_parameter("convexity_threshold", 0.6)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("depth_roi_radius_px", 4)
         self.declare_parameter("focal_length_y_px", 615.0)
+        self.declare_parameter("magenta_hsv_lower", [140, 100, 80])
+        self.declare_parameter("magenta_hsv_upper", [170, 255, 255])
+        self.declare_parameter("light_pink_hsv_lower", [140, 20, 160])
+        self.declare_parameter("light_pink_hsv_upper", [175, 130, 255])
+        self.declare_parameter("white_hsv_lower", [0, 0, 190])
+        self.declare_parameter("white_hsv_upper", [179, 25, 255])
 
         self._image_topic = (
             self.get_parameter("image_topic").get_parameter_value().string_value
@@ -128,43 +138,134 @@ class FlowerDetectionNode(Node):
     def _detect_flower(self, frame: np.ndarray) -> FlowerDetection | None:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Red tulips wrap around HSV hue 0, so use two ranges and combine them.
-        lower_red_1 = np.array([0, 80, 50])
-        upper_red_1 = np.array([12, 255, 255])
-        lower_red_2 = np.array([165, 80, 50])
-        upper_red_2 = np.array([179, 255, 255])
+        best_detection: FlowerDetection | None = None
+        for color_label, mask in self._build_color_masks(hsv):
+            detection = self._find_best_detection_for_mask(mask, hsv, color_label)
+            if detection is None:
+                continue
+            if (
+                best_detection is None
+                or detection.contour_area > best_detection.contour_area
+            ):
+                best_detection = detection
 
-        mask_1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
-        mask_2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
-        mask = cv2.bitwise_or(mask_1, mask_2)
+        return best_detection
 
+    def _build_color_masks(
+        self,
+        hsv: np.ndarray,
+    ) -> list[tuple[str, np.ndarray]]:
+        masks = []
+        for color_label in ("magenta", "light_pink", "white"):
+            lower, upper = self._get_hsv_bounds(color_label)
+            mask = cv2.inRange(hsv, lower, upper)
+            masks.append((color_label, self._clean_mask(mask)))
+
+        return masks
+
+    def _get_hsv_bounds(self, color_label: str) -> tuple[np.ndarray, np.ndarray]:
+        lower = self._get_hsv_parameter(f"{color_label}_hsv_lower")
+        upper = self._get_hsv_parameter(f"{color_label}_hsv_upper")
+        return np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8)
+
+    def _get_hsv_parameter(self, name: str) -> list[int]:
+        values = self.get_parameter(name).get_parameter_value().integer_array_value
+        if len(values) != 3:
+            self.get_logger().warning(
+                f"{name} must contain exactly 3 integers; using [0, 0, 0]"
+            )
+            return [0, 0, 0]
+
+        return [
+            max(0, min(179, int(values[0]))),
+            max(0, min(255, int(values[1]))),
+            max(0, min(255, int(values[2]))),
+        ]
+
+    def _clean_mask(self, mask: np.ndarray) -> np.ndarray:
         kernel_size = max(1, self._morph_kernel_size)
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
+    def _find_best_detection_for_mask(
+        self,
+        mask: np.ndarray,
+        hsv: np.ndarray,
+        color_label: str,
+    ) -> FlowerDetection | None:
         contours, _ = cv2.findContours(
             mask,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE,
         )
-        if not contours:
+
+        best_detection: FlowerDetection | None = None
+        for contour in contours:
+            detection = self._detection_from_contour(contour, hsv, color_label)
+            if detection is None:
+                continue
+            if (
+                best_detection is None
+                or detection.contour_area > best_detection.contour_area
+            ):
+                best_detection = detection
+
+        return best_detection
+
+    def _detection_from_contour(
+        self,
+        contour: np.ndarray,
+        hsv: np.ndarray,
+        color_label: str,
+    ) -> FlowerDetection | None:
+        contour_area = cv2.contourArea(contour)
+        if contour_area < self._min_contour_area:
             return None
 
-        largest_contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest_contour)
-        if area < self._min_contour_area:
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        if hull_area <= 0.0:
             return None
 
-        x, y, width, height = cv2.boundingRect(largest_contour)
-        points = largest_contour.reshape(-1, 2)
+        convexity_ratio = contour_area / hull_area
+        convexity_threshold = (
+            self.get_parameter("convexity_threshold")
+            .get_parameter_value()
+            .double_value
+        )
+        if convexity_ratio < convexity_threshold:
+            return None
+        if color_label == "white" and self._is_beige_wood_region(contour, hsv):
+            return None
+
+        x, y, width, height = cv2.boundingRect(contour)
+        aspect_ratio = width / float(height)
+        if aspect_ratio < 0.4 or aspect_ratio > 2.5:
+            return None
+
+        points = contour.reshape(-1, 2)
         top_y = int(points[:, 1].min())
         top_candidates = points[points[:, 1] == top_y]
         top_x = int(np.median(top_candidates[:, 0]))
         return FlowerDetection(
             bbox=(x, y, width, height),
             top_pixel=(top_x, top_y),
+            color_label=color_label,
+            contour_area=contour_area,
+            convexity_ratio=convexity_ratio,
         )
+
+    def _is_beige_wood_region(self, contour: np.ndarray, hsv: np.ndarray) -> bool:
+        contour_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        cv2.drawContours(contour_mask, [contour], -1, 255, thickness=cv2.FILLED)
+        contour_pixels = hsv[contour_mask == 255]
+        if contour_pixels.size == 0:
+            return False
+
+        median_hue = float(np.median(contour_pixels[:, 0]))
+        median_saturation = float(np.median(contour_pixels[:, 1]))
+        return 15.0 <= median_hue <= 30.0 and 20.0 <= median_saturation <= 60.0
 
     def _depth_image_to_meters(
         self,
@@ -248,15 +349,16 @@ class FlowerDetectionNode(Node):
         frame_shape: tuple[int, int, int],
     ) -> FlowerData:
         msg = FlowerData()
-        msg.label = "tulip"
 
         if detection is None:
             msg.detected = False
             msg.confidence = 0.0
+            msg.label = "none"
             msg.position = Point()
-            msg.message = "No tulip flower detected"
+            msg.message = "No Dahlia flower detected"
             return msg
 
+        msg.label = detection.color_label
         x, y, width, height = detection.bbox
         frame_height, frame_width = frame_shape[:2]
         center_x = x + width / 2.0
@@ -275,6 +377,7 @@ class FlowerDetectionNode(Node):
         msg.message = (
             f"bbox x={x} y={y} width={width} height={height}; "
             f"top_pixel x={detection.top_pixel[0]} y={detection.top_pixel[1]}; "
+            f"convexity={detection.convexity_ratio:.2f}; "
             f"{height_text}"
         )
         return msg
