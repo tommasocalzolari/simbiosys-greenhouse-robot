@@ -1,10 +1,13 @@
 topics:
-  cmd_vel: /mirte_base_controller/cmd_vel_unstamped
+  cmd_vel: /mirte_base_controller/cmd_vel
   joint_states: /joint_states
   arm_trajectory: /mirte_master_arm_controller/joint_trajectory
   arm_follow_joint_trajectory_action: /mirte_master_arm_controller/follow_joint_trajectory
   gripper_action: /mirte_master_gripper_controller/gripper_cmd
   scan: /scan
-  odom: /odom
+  odom: /mirte_base_controller/odom
   map: /map
-  image: /camera/image_raw
+  image: /camera/color/image_raw
+  depth_image: /camera/depth/image_raw
+  point_cloud: /camera/depth/points
+  gripper_image: /gripper_camera/image_raw

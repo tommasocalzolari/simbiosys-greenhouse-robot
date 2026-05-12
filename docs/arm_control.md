@@ -8,6 +8,8 @@ Known MIRTE interfaces:
 /mirte_master_arm_controller/joint_trajectory
 /mirte_master_arm_controller/follow_joint_trajectory
 /mirte_master_gripper_controller/gripper_cmd
+/io/servo/hiwonder/gripper/get_range
+/enable_arm_control
 /joint_states
 ```
 
@@ -15,6 +17,25 @@ Start safe wrapper nodes:
 
 ```bash
 ros2 launch simbiosys_bringup arm_test.launch.py
+```
+
+Run this from a Pixi shell after a successful build:
+
+```bash
+cd /path/to/main-simbiosys
+pixi shell
+source install/setup.bash
+export ROS_LOCALHOST_ONLY=0
+ros2 launch simbiosys_bringup arm_test.launch.py
+```
+
+Use a second Pixi shell for service calls:
+
+```bash
+cd /path/to/main-simbiosys
+pixi shell
+source install/setup.bash
+export ROS_LOCALHOST_ONLY=0
 ```
 
 Monitor joints:
@@ -34,6 +55,23 @@ Open or close the placeholder gripper client:
 ```bash
 ros2 service call /simbiosys/set_gripper_closed std_srvs/srv/SetBool "{data: false}"
 ros2 service call /simbiosys/set_gripper_closed std_srvs/srv/SetBool "{data: true}"
+```
+
+The current MIRTE Master reports the gripper servo range as approximately
+`-0.7603` to `0.6458` radians:
+
+```bash
+ros2 service call /io/servo/hiwonder/gripper/get_range mirte_msgs/srv/GetServoRange "{}"
+```
+
+The wrapper keeps conservative placeholder positions by default and clamps
+requests to that observed range. Override the placeholders during supervised
+testing if the physical open/closed directions are calibrated:
+
+```bash
+ros2 launch simbiosys_bringup arm_test.launch.py \
+  gripper_open_position:=0.04 \
+  gripper_close_position:=0.0
 ```
 
 Keep all real hardware motion slow, supervised, and tested in simulation first.

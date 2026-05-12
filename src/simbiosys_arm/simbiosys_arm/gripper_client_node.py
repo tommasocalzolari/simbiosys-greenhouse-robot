@@ -16,7 +16,9 @@ class GripperClientNode(Node):
         )
         self.declare_parameter("open_position", 0.04)
         self.declare_parameter("close_position", 0.0)
-        self.declare_parameter("max_effort", 5.0)
+        self.declare_parameter("min_position", -0.7603)
+        self.declare_parameter("max_position", 0.6458)
+        self.declare_parameter("max_effort", 0.0)
 
         self._action_name = (
             self.get_parameter("gripper_action").get_parameter_value().string_value
@@ -30,6 +32,12 @@ class GripperClientNode(Node):
         self._max_effort = (
             self.get_parameter("max_effort").get_parameter_value().double_value
         )
+        self._min_position = (
+            self.get_parameter("min_position").get_parameter_value().double_value
+        )
+        self._max_position = (
+            self.get_parameter("max_position").get_parameter_value().double_value
+        )
 
         self._client = ActionClient(self, GripperCommand, self._action_name)
         self.create_service(SetBool, "simbiosys/set_gripper_closed", self._on_set_closed)
@@ -42,6 +50,14 @@ class GripperClientNode(Node):
     def _on_set_closed(self, request, response):
         position = self._close_position if request.data else self._open_position
         label = "close" if request.data else "open"
+        clamped_position = min(max(position, self._min_position), self._max_position)
+        if clamped_position != position:
+            self.get_logger().warn(
+                f"Requested gripper {label} position {position:.4f} is outside "
+                f"[{self._min_position:.4f}, {self._max_position:.4f}]; "
+                f"using {clamped_position:.4f}"
+            )
+            position = clamped_position
 
         if not self._client.wait_for_server(timeout_sec=1.0):
             response.success = False
