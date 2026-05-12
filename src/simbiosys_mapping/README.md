@@ -9,7 +9,8 @@ Before debugging SimBioSys code, verify that MIRTE or Gazebo provides these
 topics and transforms:
 
 - `/scan`
-- `/odom`
+- `/mirte_base_controller/odom` on the real MIRTE Master, or `/odom` in some
+  simulation setups
 - `/tf`
 - `/tf_static`
 
@@ -18,7 +19,7 @@ Useful checks:
 ```bash
 ros2 topic list
 ros2 topic echo /scan --once
-ros2 topic echo /odom --once
+ros2 topic echo /mirte_base_controller/odom --once
 ros2 run tf2_tools view_frames
 ```
 

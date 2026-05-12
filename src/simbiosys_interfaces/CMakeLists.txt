@@ -7,6 +7,18 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
+
+# Pixi/conda environments can expose Python to CMake's Python3 finder while
+# rosidl_generator_py asks CMake's older Python finder for the same details.
+# Seed both sets of cache variables so generated Python interfaces build
+# reliably across native ROS and Pixi shells.
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development NumPy)
+set(Python_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "" FORCE)
+set(Python_INCLUDE_DIRS "${Python3_INCLUDE_DIRS}" CACHE PATH "" FORCE)
+set(Python_LIBRARIES "${Python3_LIBRARIES}" CACHE FILEPATH "" FORCE)
+set(Python_LIBRARY "${Python3_LIBRARIES}" CACHE FILEPATH "" FORCE)
+set(Python_NumPy_INCLUDE_DIRS "${Python3_NumPy_INCLUDE_DIRS}" CACHE PATH "" FORCE)
+
 find_package(rosidl_default_generators REQUIRED)
 
 set(msg_files

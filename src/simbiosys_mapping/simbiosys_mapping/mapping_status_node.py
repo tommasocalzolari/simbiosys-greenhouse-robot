@@ -10,7 +10,7 @@ class MappingStatusNode(Node):
     def __init__(self) -> None:
         super().__init__("mapping_status_node")
         self.declare_parameter("scan_topic", "/scan")
-        self.declare_parameter("odom_topic", "/odom")
+        self.declare_parameter("odom_topic", "/mirte_base_controller/odom")
         self.declare_parameter("map_topic", "/map")
 
         self._seen = {"scan": False, "odom": False, "map": False}

@@ -7,6 +7,7 @@ On the robot:
 
 ```bash
 ssh mirte@<robot-ip>
+source /opt/ros/humble/setup.bash
 ros2 launch mirte_bringup minimal_master.launch.py
 ```
 
@@ -25,7 +26,9 @@ ros2 node list
 ros2 topic list
 ros2 topic echo /joint_states --once
 ros2 topic echo /scan --once
-ros2 topic echo /odom --once
+ros2 topic echo /mirte_base_controller/odom --once
+ros2 topic echo /camera/color/image_raw --once
+ros2 action list
 ```
 
 Do not launch low-level robot bringup from `simbiosys_bringup`.

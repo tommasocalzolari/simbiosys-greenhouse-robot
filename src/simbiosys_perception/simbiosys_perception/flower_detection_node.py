@@ -9,7 +9,7 @@ class FlowerDetectionNode(Node):
 
     def __init__(self) -> None:
         super().__init__("flower_detection_node")
-        self.declare_parameter("image_topic", "/camera/image_raw")
+        self.declare_parameter("image_topic", "/camera/color/image_raw")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
         self.declare_parameter("publish_period_sec", 5.0)
 

@@ -85,6 +85,27 @@ Install the Pixi environment:
 pixi install
 ```
 
+Enter the Pixi shell as its own command. Wait until the prompt changes, for
+example to `(ro47007_mirte_ws)`, before running build or ROS commands:
+
+```bash
+pixi shell
+```
+
+Then run the workspace commands inside that Pixi shell:
+
+```bash
+rm -rf build install log
+colcon build
+source install/setup.bash
+```
+
+Check that the generated SimBioSys interfaces are visible:
+
+```bash
+ros2 interface show simbiosys_interfaces/srv/SendNamedArmPose
+```
+
 Fetch the MIRTE/ROS package repositories listed in `repos.repos`:
 
 ```bash
@@ -100,11 +121,14 @@ touch src/mirte-ros-packages/mirte_{bringup,telemetrix_cpp,teleop,test,zenoh_set
 Build:
 
 ```bash
-pixi shell
 rosdep install --from-paths src --ignore-src -r -y
 colcon build
 source install/setup.bash
 ```
+
+Run the commands above after entering `pixi shell`; do not paste `pixi shell`
+and the later commands as one batch if your terminal does not wait for the new
+Pixi shell to start.
 
 Clean build artifacts when needed:
 
@@ -131,6 +155,14 @@ Arm wrapper test:
 
 ```bash
 ros2 launch simbiosys_bringup arm_test.launch.py
+```
+
+In another Pixi shell, source the workspace and call the safe wrapper service:
+
+```bash
+source install/setup.bash
+export ROS_LOCALHOST_ONLY=0
+ros2 service call /simbiosys/send_named_arm_pose simbiosys_interfaces/srv/SendNamedArmPose "{pose_name: home}"
 ```
 
 MIRTE MoveIt, when installed:
@@ -170,7 +202,8 @@ ros2 topic list
 ros2 topic list
 ros2 topic echo /joint_states --once
 ros2 topic echo /scan --once
-ros2 topic echo /odom --once
+ros2 topic echo /mirte_base_controller/odom --once
+ros2 topic echo /camera/color/image_raw --once
 ros2 run tf2_tools view_frames
 ros2 action list
 ```
@@ -179,7 +212,11 @@ Important default interfaces:
 
 | Purpose | Topic or Action |
 | --- | --- |
-| Base velocity | `/mirte_base_controller/cmd_vel_unstamped` |
+| Base velocity | `/mirte_base_controller/cmd_vel` |
+| Odometry | `/mirte_base_controller/odom` |
+| Main color image | `/camera/color/image_raw` |
+| Depth image | `/camera/depth/image_raw` |
+| Gripper camera image | `/gripper_camera/image_raw` |
 | Arm trajectory | `/mirte_master_arm_controller/joint_trajectory` |
 | Arm FollowJointTrajectory action | `/mirte_master_arm_controller/follow_joint_trajectory` |
 | Gripper action | `/mirte_master_gripper_controller/gripper_cmd` |
