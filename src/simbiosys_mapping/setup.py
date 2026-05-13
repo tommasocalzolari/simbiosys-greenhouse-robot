@@ -28,6 +28,7 @@ setup(
         "console_scripts": [
             "mapping_status_node = simbiosys_mapping.mapping_status_node:main",
             "getmap_node = simbiosys_mapping.getmap_node:main",
+            "initial_pose_node = simbiosys_mapping.initial_pose_node:main",
         ],
     },
 )

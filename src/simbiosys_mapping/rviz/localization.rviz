@@ -1,0 +1,61 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Value: true
+    - Alpha: 0.75
+      Class: rviz_default_plugins/Map
+      Name: Map
+      Topic:
+        Value: /map
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan
+      Size (m): 0.04
+      Topic:
+        Value: /scan
+      Value: true
+    - Alpha: 0.7
+      Class: rviz_default_plugins/PoseWithCovariance
+      Name: AMCL Pose
+      Topic:
+        Value: /amcl_pose
+      Value: true
+    - Class: rviz_default_plugins/ParticleCloud
+      Name: AMCL Particles
+      Topic:
+        Value: /particle_cloud
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Description Topic:
+        Value: /robot_description
+      Name: RobotModel
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Value: false
+  Global Options:
+    Fixed Frame: map
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 8.0
+      Name: Current View
+      Pitch: 1.1
+      Value: Orbit (rviz)
+      Yaw: 0.0
+Window Geometry:
+  Height: 900
+  Width: 1400
