@@ -2,6 +2,7 @@
     "build":
     {
         "merge-install": true,
+        "symlink-install": true,
         "event-handlers": ["console_cohesion+", "summary+"],
         "cmake-args": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DBUILD_TESTING=OFF", "-GNinja"],
     }

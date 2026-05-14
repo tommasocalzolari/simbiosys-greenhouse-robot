@@ -6,7 +6,7 @@ version = "0.1.1"
 
 [tasks]
 fetch = {cmd = "vcs import --input repos.repos src", description = "Fetch MIRTE packages"}
-build = {cmd = "colcon build", description = "Build the ROS workspace"}
+build = {cmd = "colcon build --symlink-install", description = "Build the ROS workspace"}
 ws-clean = {cmd = "rm -rf build install log", description = "Clean build artifacts (build, install, log directories)"}
 clean-build = [{ task = "ws-clean" }, { task = "build" }]
 
@@ -94,4 +94,4 @@ cmake = "==3.22.1"
 
 [activation.env]
 GAZEBO_SUPPRESS_EOL_WARNING = "1"
-ROS_LOCALHOST_ONLY = "1"
+ROS_LOCALHOST_ONLY = "0"
