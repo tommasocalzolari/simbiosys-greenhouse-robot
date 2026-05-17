@@ -1,0 +1,17 @@
+{
+  "rosbridgeUrl": "ws://localhost:9090",
+  "dummyMode": true,
+  "topics": {
+    "cmdVel": "/mirte_base_controller/cmd_vel_unstamped",
+    "cameraCompressed": "/camera/image_raw/compressed",
+    "cameraRaw": "/camera/image_raw",
+    "map": "/map",
+    "odom": "/mirte_base_controller/odom",
+    "amclPose": "/amcl_pose",
+    "plantHealth": "/plant_health",
+    "plantHealthReport": "/plant_health_report",
+    "flowerDetections": "/flower_detections",
+    "inspectBedCommand": "/ui/inspect_bed",
+    "battery": "/battery_state"
+  }
+}
