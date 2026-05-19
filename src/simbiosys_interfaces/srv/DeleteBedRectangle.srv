@@ -1,0 +1,5 @@
+string map_id
+string bed_id
+---
+bool success
+string message

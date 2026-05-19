@@ -1,0 +1,4 @@
+simbiosys_interfaces/BedRectangle bed
+---
+bool success
+string message

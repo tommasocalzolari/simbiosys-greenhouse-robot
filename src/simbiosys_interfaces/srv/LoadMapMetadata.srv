@@ -1,0 +1,6 @@
+string map_id
+string metadata_path
+---
+bool success
+simbiosys_interfaces/MapMetadata metadata
+string message

@@ -1,0 +1,10 @@
+string active_bed_id
+string active_scan_position_id
+string active_flower_id
+uint32 scan_index
+uint32 scan_total
+string detection_status
+uint32 retry_count
+simbiosys_interfaces/PlantHealth latest_plant_health
+bool error
+string message

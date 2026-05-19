@@ -6,5 +6,6 @@ uint8 INSPECT_BED=4
 uint8 INSPECT_FLOWER=5
 uint8 HARVEST=6
 uint8 ARM_TEST=7
+uint8 NAVIGATE=8
 
 uint8 type

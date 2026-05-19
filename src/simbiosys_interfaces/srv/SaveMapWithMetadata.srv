@@ -1,0 +1,9 @@
+string map_id
+string map_yaml_path
+string cleaned_map_yaml_path
+simbiosys_interfaces/BedRectangle[] beds
+simbiosys_interfaces/ScanPosition[] scan_positions
+---
+bool success
+string metadata_path
+string message

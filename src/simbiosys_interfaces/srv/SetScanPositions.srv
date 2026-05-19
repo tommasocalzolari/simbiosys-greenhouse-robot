@@ -1,0 +1,6 @@
+string map_id
+string bed_id
+simbiosys_interfaces/ScanPosition[] scan_positions
+---
+bool success
+string message

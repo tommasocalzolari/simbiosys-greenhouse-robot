@@ -1,0 +1,9 @@
+string phase
+geometry_msgs/PoseStamped current_pose
+geometry_msgs/PoseStamped target_pose
+nav_msgs/Path current_path
+float32 progress
+bool replanning
+bool obstacle_detected
+bool error
+string message
