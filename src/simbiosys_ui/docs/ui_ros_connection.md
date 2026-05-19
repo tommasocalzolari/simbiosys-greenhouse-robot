@@ -10,6 +10,8 @@ The topic config still keeps a `rosbridgeUrl` field for future browser-native RO
 }
 ```
 
+When `/api/status` is requested from another device and this value points at `localhost` or `127.0.0.1`, the UI reports a rosbridge URL using the current page host instead. For example, a browser opened at `http://192.168.1.50:8080` receives `ws://192.168.1.50:9090`. This avoids making a remote browser try to connect to its own `localhost`.
+
 ## Start rosbridge
 
 If browser-native ROS access is added later, start rosbridge with:
@@ -19,6 +21,8 @@ source /opt/ros/humble/setup.bash
 source /home/mark/MDP/install/setup.bash
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 ```
+
+Rosbridge must listen on the laptop, and port `9090` must be reachable from devices on the same trusted local network. Do not expose rosbridge to the public internet.
 
 If the package is missing:
 
