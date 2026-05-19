@@ -1,8 +1,25 @@
+import json
+from dataclasses import dataclass
+
 import rclpy
 from geometry_msgs.msg import Point
 from rclpy.node import Node
+from std_msgs.msg import Bool, Int32, String
 
-from simbiosys_interfaces.msg import FlowerData, PlantAnalysis, PlantHealth
+from simbiosys_interfaces.msg import (
+    BedObservation,
+    FlowerData,
+    PlantAnalysis,
+    PlantHealth,
+)
+
+
+@dataclass
+class TrackedFlower:
+    color: str
+    last_x: float
+    counted: bool = True
+    frames_unseen: int = 0
 
 
 class PlantAnalysisNode(Node):
@@ -10,6 +27,9 @@ class PlantAnalysisNode(Node):
 
     def __init__(self) -> None:
         super().__init__("plant_analysis_node")
+        self.declare_parameter("tracking_threshold", 80)
+        self.declare_parameter("max_frames_unseen", 10)
+
         self._publisher = self.create_publisher(
             PlantAnalysis,
             "simbiosys/plant_analysis",
@@ -20,23 +40,120 @@ class PlantAnalysisNode(Node):
             "simbiosys/plant_health",
             10,
         )
+        self._flower_counts_publisher = self.create_publisher(
+            String,
+            "/simbiosys/flower_counts",
+            10,
+        )
         self.create_subscription(
             FlowerData,
             "simbiosys/flower_data",
             self._on_flower_data,
             10,
         )
+        self.create_subscription(
+            Bool,
+            "/simbiosys/reset_counter",
+            self._on_reset_counter,
+            10,
+        )
+        self.create_subscription(
+            Int32,
+            "/simbiosys/current_bed_id",
+            self._on_current_bed_id,
+            10,
+        )
+        self.create_subscription(
+            BedObservation,
+            "simbiosys/bed_observation",
+            self._on_bed_observation,
+            10,
+        )
         self._latest_flower_data: FlowerData | None = None
+        self._current_bed_id = -1
+        self._tracked_flowers: list[TrackedFlower] = []
+        self._flower_counts = {
+            "magenta": 0,
+            "light_pink": 0,
+            "white": 0,
+        }
         self._timer = self.create_timer(5.0, self._on_timer)
         self.declare_parameter("default_bed_id", "A")
         self.declare_parameter("default_flower_id", "A1")
         self.declare_parameter("harvest_height_cm", 35.0)
+        self._flower_counts_timer = self.create_timer(
+            1.0,
+            self._publish_flower_counts,
+        )
 
         # TODO: Add bug detection and maturity estimation.
         self.get_logger().info("Plant analysis placeholder started")
 
     def _on_flower_data(self, msg: FlowerData) -> None:
         self._latest_flower_data = msg
+        if msg.detected:
+            self._track_flower(msg)
+        else:
+            self._age_tracked_flowers()
+
+    def _track_flower(self, msg: FlowerData) -> None:
+        tracking_threshold = self.get_parameter(
+            "tracking_threshold"
+        ).get_parameter_value().integer_value
+        flower_x = msg.position.x
+
+        matched_flower = None
+        for tracked_flower in self._tracked_flowers:
+            if abs(flower_x - tracked_flower.last_x) < tracking_threshold:
+                matched_flower = tracked_flower
+                break
+
+        for tracked_flower in self._tracked_flowers:
+            if tracked_flower is matched_flower:
+                tracked_flower.last_x = flower_x
+                tracked_flower.frames_unseen = 0
+            else:
+                tracked_flower.frames_unseen += 1
+
+        if matched_flower is None:
+            flower_color = msg.label
+            self._tracked_flowers.append(TrackedFlower(flower_color, flower_x))
+            if flower_color in self._flower_counts:
+                self._flower_counts[flower_color] += 1
+            else:
+                self.get_logger().warning(
+                    f"Detected flower with untracked color '{flower_color}'"
+                )
+
+        self._prune_unseen_flowers()
+
+    def _age_tracked_flowers(self) -> None:
+        for tracked_flower in self._tracked_flowers:
+            tracked_flower.frames_unseen += 1
+        self._prune_unseen_flowers()
+
+    def _prune_unseen_flowers(self) -> None:
+        max_frames_unseen = self.get_parameter(
+            "max_frames_unseen"
+        ).get_parameter_value().integer_value
+        self._tracked_flowers = [
+            tracked_flower
+            for tracked_flower in self._tracked_flowers
+            if tracked_flower.frames_unseen <= max_frames_unseen
+        ]
+
+    def _on_reset_counter(self, msg: Bool) -> None:
+        if msg.data:
+            self._tracked_flowers.clear()
+            for color in self._flower_counts:
+                self._flower_counts[color] = 0
+            self.get_logger().info("Reset flower counters")
+
+    def _on_current_bed_id(self, msg: Int32) -> None:
+        self._current_bed_id = msg.data
+
+    def _on_bed_observation(self, msg: BedObservation) -> None:
+        self._current_bed_id = msg.bed_id
 
     def _on_timer(self) -> None:
         analysis = PlantAnalysis()
@@ -63,12 +180,8 @@ class PlantAnalysisNode(Node):
 
     def _plant_health_from_analysis(self, analysis: PlantAnalysis) -> PlantHealth:
         msg = PlantHealth()
-        msg.bed_id = (
-            self.get_parameter("default_bed_id").get_parameter_value().string_value
-        )
-        msg.flower_id = (
-            self.get_parameter("default_flower_id").get_parameter_value().string_value
-        )
+        msg.bed_id = self._bed_id_for_health()
+        msg.flower_id = self._flower_id_for_health(msg.bed_id)
         msg.height_cm = float(analysis.height)
         msg.color = analysis.color or "unknown"
         msg.bug_detected = bool(analysis.bugs_detected)
@@ -92,6 +205,36 @@ class PlantAnalysisNode(Node):
         if analysis.bugs_detected:
             return "critical"
         return "healthy"
+
+    def _bed_id_for_health(self) -> str:
+        if self._current_bed_id >= 0:
+            return str(self._current_bed_id)
+        return self.get_parameter("default_bed_id").get_parameter_value().string_value
+
+    def _flower_id_for_health(self, bed_id: str) -> str:
+        default_flower_id = (
+            self.get_parameter("default_flower_id").get_parameter_value().string_value
+        )
+        if self._latest_flower_data is None or not self._latest_flower_data.detected:
+            return default_flower_id
+        return f"{bed_id}-latest"
+
+    def _publish_flower_counts(self) -> None:
+        flower_counts = {
+            "bed_id": self._current_bed_id,
+            "magenta": self._flower_counts["magenta"],
+            "light_pink": self._flower_counts["light_pink"],
+            "white": self._flower_counts["white"],
+        }
+        flower_counts["total"] = (
+            flower_counts["magenta"]
+            + flower_counts["light_pink"]
+            + flower_counts["white"]
+        )
+
+        msg = String()
+        msg.data = json.dumps(flower_counts)
+        self._flower_counts_publisher.publish(msg)
 
 
 def main(args=None) -> None:
