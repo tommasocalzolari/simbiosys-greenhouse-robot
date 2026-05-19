@@ -4,11 +4,11 @@ amcl:
     use_sim_time: false
 
     # Motion noise model. Higher values mean AMCL trusts odometry less.
-    alpha1: 0.4
-    alpha2: 0.4
-    alpha3: 0.3
-    alpha4: 0.3
-    alpha5: 0.4
+    alpha1: 0.5
+    alpha2: 0.5
+    alpha3: 0.4
+    alpha4: 0.4
+    alpha5: 0.5
 
     # TF frames. AMCL publishes map -> odom and reads odom -> base_link.
     base_frame_id: base_link
@@ -25,13 +25,13 @@ amcl:
     lambda_short: 0.1
     laser_likelihood_max_dist: 2.0
     laser_max_range: 12.0
-    laser_min_range: -1.0
+    laser_min_range: 0.2
     laser_model_type: likelihood_field
     max_beams: 60
 
     # Particle filter size and convergence settings.
-    max_particles: 3000
-    min_particles: 1000
+    max_particles: 3500
+    min_particles: 1500
     pf_err: 0.05
     pf_z: 0.99
     recovery_alpha_fast: 0.0
@@ -47,8 +47,8 @@ amcl:
     transform_tolerance: 1.0
 
     # Minimum motion before AMCL processes another update.
-    update_min_a: 0.1
-    update_min_d: 0.1
+    update_min_a: 0.05
+    update_min_d: 0.05
 
     # Laser model weights. They control how scans are scored against the map.
     sigma_hit: 0.2

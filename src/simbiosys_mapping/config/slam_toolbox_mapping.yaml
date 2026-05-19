@@ -27,7 +27,10 @@ slam_toolbox:
 
     # Ignore laser readings farther than this distance. Reducing this can help
     # when far measurements are noisy or see through open/reflective spaces.
-    max_laser_range: 8.0
+    max_laser_range: 5.0
+
+    # Ignore very close readings, which are usually robot self-hits.
+    min_laser_range: 0.20
 
     # Minimum time between scans used by SLAM. Lower values use more scans,
     # improving detail but increasing CPU load and possible noise.

@@ -19,7 +19,7 @@ class GetMapNode(Node):
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("output_dir", "maps")
         self.declare_parameter("map_name", "mirte_map")
-        self.declare_parameter("occupied_thresh", 0.65)
+        self.declare_parameter("occupied_thresh", 0.8)
         self.declare_parameter("free_thresh", 0.25)
         self.declare_parameter("status_period", 5.0)
         self.declare_parameter("auto_save_period", 20.0)

@@ -22,17 +22,7 @@ def generate_launch_description():
     )
     map_yaml = LaunchConfiguration("map")
     params_file = LaunchConfiguration("params_file")
-    publish_initial_pose = PythonExpression(
-        [
-            "'",
-            LaunchConfiguration("publish_initial_pose"),
-            "' if '",
-            LaunchConfiguration("publish_initial_pose"),
-            "' != 'auto' else '",
-            simulation,
-            "'",
-        ]
-    )
+    publish_initial_pose = LaunchConfiguration("publish_initial_pose")
     world = LaunchConfiguration("world")
     gazebo_gui = LaunchConfiguration("gazebo_gui")
     rviz_config = LaunchConfiguration("rviz_config")
@@ -190,10 +180,10 @@ def generate_launch_description():
             DeclareLaunchArgument("autostart", default_value="true"),
             DeclareLaunchArgument(
                 "publish_initial_pose",
-                default_value="auto",
+                default_value="false",
                 description=(
-                    "auto publishes an initial pose only in simulation. "
-                    "Set true/false to override."
+                    "false by default so the operator sets AMCL's initial "
+                    "pose manually in RViz. Set true only for scripted tests."
                 ),
             ),
             DeclareLaunchArgument("initial_pose_x", default_value="0.0"),
