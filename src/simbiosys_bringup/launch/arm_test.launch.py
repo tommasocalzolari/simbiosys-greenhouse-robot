@@ -6,6 +6,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     """Launch safe arm wrapper nodes for interface testing."""
+    motion_duration_sec = LaunchConfiguration("motion_duration_sec")
     gripper_open_position = LaunchConfiguration("gripper_open_position")
     gripper_close_position = LaunchConfiguration("gripper_close_position")
     gripper_min_position = LaunchConfiguration("gripper_min_position")
@@ -14,6 +15,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "motion_duration_sec",
+                default_value="3.0",
+                description="Seconds used by the named arm pose wrapper to reach the target.",
+            ),
             DeclareLaunchArgument(
                 "gripper_open_position",
                 default_value="0.04",
@@ -50,6 +56,7 @@ def generate_launch_description():
                 executable="named_joint_pose_node",
                 name="named_joint_pose_node",
                 output="screen",
+                parameters=[{"motion_duration_sec": motion_duration_sec}],
             ),
             Node(
                 package="simbiosys_arm",

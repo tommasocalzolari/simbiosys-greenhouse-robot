@@ -19,6 +19,12 @@ Start safe wrapper nodes:
 ros2 launch simbiosys_bringup arm_test.launch.py
 ```
 
+Slow the arm motion by increasing the named pose duration, for example:
+
+```bash
+ros2 launch simbiosys_bringup arm_test.launch.py motion_duration_sec:=5.0
+```
+
 Run this from a Pixi shell after a successful build:
 
 ```bash

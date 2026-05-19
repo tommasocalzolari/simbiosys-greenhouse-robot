@@ -11,6 +11,10 @@ source /opt/ros/humble/setup.bash
 ros2 launch mirte_bringup minimal_master.launch.py
 ```
 
+If the arm wrapper suddenly reports no subscribers, restart this robot-side
+bringup first. The laptop wrapper only publishes trajectories; it does not
+create the arm controller.
+
 On the laptop:
 
 ```bash
