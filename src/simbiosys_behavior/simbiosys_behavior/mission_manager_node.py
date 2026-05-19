@@ -49,6 +49,16 @@ class TopicHealth:
     plan_seen: bool = False
 
 
+class FailureCode:
+    """Shared behavior failure labels used in action results and status text."""
+
+    PRECONDITION_FAILED = "PRECONDITION_FAILED"
+    PLANNING_FAILED = "PLANNING_FAILED"
+    EXECUTION_FAILED = "EXECUTION_FAILED"
+    HARVEST_DISABLED = "HARVEST_DISABLED"
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+
+
 class MissionManagerNode(Node):
     """Laptop-side coordinator for SimBioSys behavior requests.
 
@@ -64,6 +74,8 @@ class MissionManagerNode(Node):
         self._topic_health = TopicHealth()
         self._topic_lock = threading.Lock()
         self._active_nav_goal_handle = None
+        self._latest_pose = PoseStamped()
+        self._latest_path = Path()
 
         self.declare_parameter("harvest_enabled", False)
         self.declare_parameter("scan_topic", "/scan")
@@ -160,7 +172,7 @@ class MissionManagerNode(Node):
         self.create_subscription(
             Odometry,
             self._string_parameter("odom_topic"),
-            lambda _msg: self._mark_seen("odom"),
+            self._on_odom,
             10,
         )
         self.create_subscription(
@@ -172,13 +184,13 @@ class MissionManagerNode(Node):
         self.create_subscription(
             PoseWithCovarianceStamped,
             self._string_parameter("amcl_pose_topic"),
-            lambda _msg: self._mark_seen("amcl"),
+            self._on_amcl_pose,
             10,
         )
         self.create_subscription(
             Path,
             self._string_parameter("nav_plan_topic"),
-            lambda _msg: self._mark_seen("plan"),
+            self._on_nav_plan,
             10,
         )
 
@@ -203,6 +215,24 @@ class MissionManagerNode(Node):
                 self._topic_health.amcl_seen = True
             elif key == "plan":
                 self._topic_health.plan_seen = True
+
+    def _on_odom(self, msg: Odometry) -> None:
+        self._mark_seen("odom")
+        pose = PoseStamped()
+        pose.header = msg.header
+        pose.pose = msg.pose.pose
+        self._latest_pose = pose
+
+    def _on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
+        self._mark_seen("amcl")
+        pose = PoseStamped()
+        pose.header = msg.header
+        pose.pose = msg.pose.pose
+        self._latest_pose = pose
+
+    def _on_nav_plan(self, msg: Path) -> None:
+        self._mark_seen("plan")
+        self._latest_path = msg
 
     def _health_snapshot(self) -> TopicHealth:
         with self._topic_lock:
@@ -379,7 +409,10 @@ class MissionManagerNode(Node):
 
         target_pose = goal_handle.request.target_pose
         if not self._pose_is_finite(target_pose):
-            message = "PRECONDITION_FAILED: target_pose contains non-finite values"
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "target_pose contains non-finite values"
+            )
             self._publish_navigation_status("failed", message, error=True)
             return False, message
 
@@ -389,13 +422,19 @@ class MissionManagerNode(Node):
             required.append("amcl")
         missing = self._missing_topics(health, required)
         if missing:
-            message = "PRECONDITION_FAILED: navigation waiting for " + ", ".join(missing)
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: navigation waiting for "
+                + ", ".join(missing)
+            )
             self._publish_feedback(goal_handle, message, 0.1)
             self._publish_navigation_status("failed", message, error=True)
             return False, message
 
         if self._nav2_client is None:
-            message = "PRECONDITION_FAILED: nav2_msgs NavigateToPose is not available"
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "nav2_msgs NavigateToPose is not available"
+            )
             self._publish_navigation_status("failed", message, error=True)
             return False, message
 
@@ -403,7 +442,10 @@ class MissionManagerNode(Node):
         if not self._nav2_client.wait_for_server(
             timeout_sec=self._double_parameter("nav2_server_timeout_sec")
         ):
-            message = "PRECONDITION_FAILED: Nav2 NavigateToPose action is unavailable"
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "Nav2 NavigateToPose action is unavailable"
+            )
             self._publish_navigation_status("failed", message, error=True)
             return False, message
 
@@ -425,13 +467,15 @@ class MissionManagerNode(Node):
                 self._cancel_active_work()
                 return False, "NAVIGATE cancelled"
             if time.monotonic() >= send_deadline:
-                message = "PRECONDITION_FAILED: timed out sending Nav2 goal"
+                message = (
+                    f"{FailureCode.PRECONDITION_FAILED}: timed out sending Nav2 goal"
+                )
                 self._publish_navigation_status("failed", message, goal.pose, error=True)
                 return False, message
             time.sleep(0.05)
         nav_goal_handle = send_goal_future.result()
         if nav_goal_handle is None or not nav_goal_handle.accepted:
-            message = "PLANNING_FAILED: Nav2 rejected the goal"
+            message = f"{FailureCode.PLANNING_FAILED}: Nav2 rejected the goal"
             self._publish_navigation_status("failed", message, goal.pose, error=True)
             return False, message
 
@@ -446,7 +490,7 @@ class MissionManagerNode(Node):
         result = result_future.result()
         self._active_nav_goal_handle = None
         if result is None:
-            message = "EXECUTION_FAILED: Nav2 returned no result"
+            message = f"{FailureCode.EXECUTION_FAILED}: Nav2 returned no result"
             self._publish_navigation_status("failed", message, goal.pose, error=True)
             return False, message
 
@@ -458,7 +502,7 @@ class MissionManagerNode(Node):
             self._set_mode_for_behavior(BehaviorType.IDLE)
             return True, message
 
-        message = f"EXECUTION_FAILED: Nav2 finished with status {status}"
+        message = f"{FailureCode.EXECUTION_FAILED}: Nav2 finished with status {status}"
         self._publish_navigation_status("failed", message, goal.pose, error=True)
         return False, message
 
@@ -468,20 +512,26 @@ class MissionManagerNode(Node):
             return False, message
         bed_id = goal_handle.request.target_id.strip()
         if not bed_id:
-            message = "PRECONDITION_FAILED: INSPECT_BED requires target_id=<bed_id>"
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "INSPECT_BED requires target_id=<bed_id>"
+            )
             self._publish_scan_progress(message, error=True)
             return False, message
         message = (
-            f"INSPECT_BED accepted for bed '{bed_id}'. "
-            "Scan-position execution is ready for metadata integration."
+            f"{FailureCode.NOT_IMPLEMENTED}: INSPECT_BED accepted for bed "
+            f"'{bed_id}', but scan-position execution is not implemented yet."
         )
         self._publish_scan_progress(
             message,
             active_bed_id=bed_id,
             detection_status="waiting_for_scan_positions",
+            error=True,
         )
         self._publish_feedback(goal_handle, message, 1.0)
-        return True, message
+        # TODO: Load ScanPosition metadata, move to each pose with Nav2, then
+        # publish PlantHealth updates and ScanProgress retries/misses.
+        return False, message
 
     def _execute_inspect_flower(self, goal_handle) -> tuple[bool, str]:
         success, message = self._set_mode_for_behavior(BehaviorType.INSPECT_FLOWER)
@@ -489,20 +539,25 @@ class MissionManagerNode(Node):
             return False, message
         flower_id = goal_handle.request.target_id.strip()
         if not flower_id:
-            message = "PRECONDITION_FAILED: INSPECT_FLOWER requires target_id"
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "INSPECT_FLOWER requires target_id"
+            )
             self._publish_scan_progress(message, error=True)
             return False, message
         message = (
-            f"INSPECT_FLOWER accepted for '{flower_id}'. "
-            "Single-position scan execution is ready for metadata integration."
+            f"{FailureCode.NOT_IMPLEMENTED}: INSPECT_FLOWER accepted for "
+            f"'{flower_id}', but single-position scan execution is not implemented yet."
         )
         self._publish_scan_progress(
             message,
             active_flower_id=flower_id,
             detection_status="waiting_for_scan_position",
+            error=True,
         )
         self._publish_feedback(goal_handle, message, 1.0)
-        return True, message
+        # TODO: Resolve flower_id to a ScanPosition and run one scan attempt.
+        return False, message
 
     def _execute_harvest(self, goal_handle) -> tuple[bool, str]:
         success, message = self._set_mode_for_behavior(BehaviorType.HARVEST)
@@ -510,7 +565,7 @@ class MissionManagerNode(Node):
             return False, message
         flower_id = goal_handle.request.target_id.strip()
         if not self._harvest_enabled:
-            message = "HARVEST_DISABLED: harvest_enabled is false"
+            message = f"{FailureCode.HARVEST_DISABLED}: harvest_enabled is false"
             self._publish_harvest_status(
                 "disabled",
                 message,
@@ -519,20 +574,26 @@ class MissionManagerNode(Node):
             )
             return False, message
         if not flower_id:
-            message = "PRECONDITION_FAILED: HARVEST requires target_id=<flower_id>"
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "HARVEST requires target_id=<flower_id>"
+            )
             self._publish_harvest_status("failed", message, error=True)
             return False, message
         message = (
-            f"HARVEST accepted for '{flower_id}'. "
-            "Physical harvest sequence is gated until arm/gripper poses are validated."
+            f"{FailureCode.NOT_IMPLEMENTED}: HARVEST accepted for '{flower_id}', "
+            "but physical harvest execution is not implemented yet."
         )
         self._publish_harvest_status(
-            "dry_run_ready",
+            "not_implemented",
             message,
             active_flower_id=flower_id,
+            error=True,
         )
         self._publish_feedback(goal_handle, message, 1.0)
-        return True, message
+        # TODO: Add validated arm/gripper pose sequence before enabling physical
+        # harvest, then add visual-servo alignment.
+        return False, message
 
     def _on_nav2_feedback(self, goal_handle, feedback_msg) -> None:
         feedback = feedback_msg.feedback
@@ -570,8 +631,9 @@ class MissionManagerNode(Node):
     ) -> None:
         status = NavigationStatus()
         status.phase = phase
+        status.current_pose = self._latest_pose
         status.target_pose = target_pose if target_pose is not None else PoseStamped()
-        status.current_path = Path()
+        status.current_path = self._latest_path
         status.progress = 0.0 if error else 0.5
         status.replanning = phase == "replanning"
         status.obstacle_detected = False

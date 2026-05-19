@@ -5,6 +5,7 @@
 - [Simulation](simulation.md)
 - [Mapping](mapping.md)
 - [Behavior System](behavior_sequences_simbiosys.md)
+- [Behavior API Examples](behavior_api_examples.md)
 - [SLAM Debugging and Tuning](slam_debug_tuning.md)
 - [Localization Debugging and Tuning](localization_debug_tuning.md)
 - [Arm Control](arm_control.md)
