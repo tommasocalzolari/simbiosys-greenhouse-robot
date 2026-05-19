@@ -1,16 +1,74 @@
 slam_toolbox:
   ros__parameters:
+    # Time source. The launch file overrides this automatically:
+    # simulation:=true uses Gazebo time, simulation:=false uses real robot time.
     use_sim_time: false
+
+    # Run slam_toolbox in mapping mode, which builds a map while estimating
+    # the robot pose in that growing map.
     mode: mapping
+
+    # TF frame names. slam_toolbox needs odom -> base_link from the robot,
+    # then it publishes map -> odom.
     odom_frame: odom
     map_frame: map
     base_frame: base_link
+
+    # Laser scan input topic.
     scan_topic: /scan
-    map_update_interval: 5.0
+
+    # How often the /map topic is updated. Lower values update RViz/map saving
+    # faster, but use more CPU.
+    map_update_interval: 2.0
+
+    # Occupancy grid cell size in meters. 0.05 means each map pixel is 5 cm.
+    # Lower values give more detail but cost more CPU and memory.
     resolution: 0.05
-    max_laser_range: 12.0
-    minimum_time_interval: 0.5
+
+    # Ignore laser readings farther than this distance. Reducing this can help
+    # when far measurements are noisy or see through open/reflective spaces.
+    max_laser_range: 8.0
+
+    # Minimum time between scans used by SLAM. Lower values use more scans,
+    # improving detail but increasing CPU load and possible noise.
+    minimum_time_interval: 0.2
+
+    # How long slam_toolbox waits for needed TF transforms before dropping data.
     transform_timeout: 0.2
+
+    # How much TF history to keep available for matching delayed sensor data.
     tf_buffer_duration: 30.0
+
+    # Use every Nth scan. 1 means use every scan that passes the timing/motion
+    # filters.
     throttle_scans: 1
+
+    # How often slam_toolbox publishes its output transform/map updates where
+    # this parameter is supported.
     publish_period: 1.0
+
+#######################################
+
+    # Match each new laser scan against previous scans/map geometry. This helps
+    # correct wheel odometry drift.
+    use_scan_matching: true
+
+    # Use the scan's center/shape information during matching.
+    use_scan_barycenter: true
+
+    # Add a new scan to the SLAM graph after the robot moves this far in meters.
+    # Smaller values add more detail but may add noise and CPU load.
+    minimum_travel_distance: 0.2
+
+    # Add a new scan after the robot rotates this far in radians.
+    # 0.2 rad is about 11.5 degrees.
+    minimum_travel_heading: 0.2
+
+    # Recognize already-visited places and correct accumulated drift.
+    do_loop_closing: true
+
+    # Number of recent scans kept for scan matching.
+    scan_buffer_size: 10
+
+    # Maximum distance, in meters, for scans kept in the scan matching buffer.
+    scan_buffer_maximum_scan_distance: 10.0

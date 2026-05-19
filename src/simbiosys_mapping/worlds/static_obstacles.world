@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <world name="default">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <gravity>0 0 -9.8</gravity>
+    <physics type="ode">
+      <max_step_size>0.01</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>100</real_time_update_rate>
+    </physics>
+    <scene>
+      <ambient>0.8 0.8 0.8 1</ambient>
+      <background>0.53 0.81 0.92 1</background>
+      <shadows>false</shadows>
+    </scene>  
+
+    <model name="north_wall">
+      <static>true</static>
+      <pose>1.5 3.0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>5.5 0.12 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>5.5 0.12 0.5</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="south_wall">
+      <static>true</static>
+      <pose>1.5 -2.0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>5.5 0.12 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>5.5 0.12 0.5</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="west_wall">
+      <static>true</static>
+      <pose>-1.25 0.5 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.12 5.0 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.12 5.0 0.5</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="east_wall">
+      <static>true</static>
+      <pose>4.25 0.5 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.12 5.0 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.12 5.0 0.5</size></box></geometry>
+          <material><ambient>0.4 0.4 0.4 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="center_block">
+      <static>true</static>
+      <pose>2.6 0.55 0.3 0 0 0.4</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.9 0.35 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.9 0.35 0.6</size></box></geometry>
+          <material><ambient>0.1 0.45 0.8 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="corner_block">
+      <static>true</static>
+      <pose>0.0 1.75 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.45 0.9 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.45 0.9 0.5</size></box></geometry>
+          <material><ambient>0.75 0.25 0.15 1</ambient></material>
+        </visual>
+      </link>
+    </model>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>1.6 0.5 7.0 0 1.45 0</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+  </world>
+</sdf>
