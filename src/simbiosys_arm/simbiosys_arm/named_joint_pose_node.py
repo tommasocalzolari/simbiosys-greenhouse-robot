@@ -13,8 +13,18 @@ JOINT_NAMES = [
 
 SAFE_PLACEHOLDER_POSES = {
     "home": [0.0, 0.0, 0.0, 0.0],
-    "inspect": [0.0, -0.35, 0.55, -0.20],
-    "stow": [0.0, 0.25, -0.25, 0.0],
+    "camera_forward": [0.0, -0.742, 0.667, -1.492],
+    "camera_down": [-0.064, -0.625, -1.486, -1.03],
+    "inspect": [0.0, 0.7853981633974483, -1.5707963267948966, -0.7853981633974483],
+    "stow": [1.141592653589793, 0.7853981633974483, -1.5707963267948966, -0.7853981633974483],
+}
+
+POSE_ALIASES = {
+    "forward": "camera_forward",
+    "look_forward": "camera_forward",
+    "horizontal": "camera_forward",
+    "down": "camera_down",
+    "look_down": "camera_down",
 }
 
 
@@ -54,6 +64,7 @@ class NamedJointPoseNode(Node):
 
     def _on_send_named_pose(self, request, response):
         pose_name = request.pose_name.strip().lower()
+        pose_name = POSE_ALIASES.get(pose_name, pose_name)
         if pose_name not in SAFE_PLACEHOLDER_POSES:
             response.accepted = False
             response.message = (

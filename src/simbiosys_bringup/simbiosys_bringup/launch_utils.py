@@ -2,10 +2,8 @@ import os
 
 from ament_index_python.packages import PackageNotFoundError, get_package_prefix
 from launch.actions import IncludeLaunchDescription, LogInfo
-from launch.launch_description_sources import (
-    PythonLaunchDescriptionSource,
-    XMLLaunchDescriptionSource,
-)
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
