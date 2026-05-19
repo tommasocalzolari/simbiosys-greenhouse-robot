@@ -782,6 +782,7 @@ def main(args=None) -> None:
     try:
         executor.spin()
     finally:
+        executor.shutdown()
         executor.remove_node(node)
         node.destroy_node()
         rclpy.shutdown()

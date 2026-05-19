@@ -18,9 +18,15 @@ def generate_launch_description():
     gripper_min_position = LaunchConfiguration("gripper_min_position")
     gripper_max_position = LaunchConfiguration("gripper_max_position")
     gripper_max_effort = LaunchConfiguration("gripper_max_effort")
+    motion_duration_sec = LaunchConfiguration("motion_duration_sec")
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "motion_duration_sec",
+                default_value="3.0",
+                description="Seconds used by the named arm pose wrapper to reach the target.",
+            ),
             DeclareLaunchArgument(
                 "image_topic",
                 default_value="/camera/color/image_raw",
@@ -109,6 +115,7 @@ def generate_launch_description():
                 executable="named_joint_pose_node",
                 name="named_joint_pose_node",
                 output="screen",
+                parameters=[{"motion_duration_sec": motion_duration_sec}],
             ),
             Node(
                 package="simbiosys_arm",

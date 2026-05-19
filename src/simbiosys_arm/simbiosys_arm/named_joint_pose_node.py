@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from simbiosys_interfaces.srv import SendNamedArmPose
+from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
@@ -14,9 +15,9 @@ JOINT_NAMES = [
 SAFE_PLACEHOLDER_POSES = {
     "home": [0.0, 0.0, 0.0, 0.0],
     "camera_forward": [0.0, -0.742, 0.667, -1.492],
-    "camera_down": [-0.064, -0.625, -1.486, -1.03],
+    "camera_down": [0.0, 0.0, -0.7853981633974483, -1.5707963267948966],
     "inspect": [0.0, 0.7853981633974483, -1.5707963267948966, -0.7853981633974483],
-    "stow": [1.141592653589793, 0.7853981633974483, -1.5707963267948966, -0.7853981633974483],
+    "stow": [0.0, 1.57079632, -1.5707963267948966, -1.57079632],
 }
 
 POSE_ALIASES = {
@@ -51,6 +52,7 @@ class NamedJointPoseNode(Node):
             self._trajectory_topic,
             10,
         )
+        self._enable_arm_client = self.create_client(SetBool, "/enable_arm_control")
         self.create_service(
             SendNamedArmPose,
             "simbiosys/send_named_arm_pose",
@@ -73,8 +75,21 @@ class NamedJointPoseNode(Node):
             )
             return response
 
+        self._ensure_arm_enabled()
+
         trajectory = JointTrajectory()
         trajectory.joint_names = JOINT_NAMES
+        trajectory.header.stamp = self.get_clock().now().to_msg()
+
+        subscription_count = self._wait_for_subscribers(timeout_sec=1.0)
+        if subscription_count == 0:
+            response.accepted = False
+            response.message = (
+                f"No subscribers on {self._trajectory_topic}; "
+                "is mirte_bringup/minimal_master running on the robot?"
+            )
+            self.get_logger().warning(response.message)
+            return response
 
         point = JointTrajectoryPoint()
         point.positions = SAFE_PLACEHOLDER_POSES[pose_name]
@@ -87,10 +102,37 @@ class NamedJointPoseNode(Node):
         self._publisher.publish(trajectory)
         response.accepted = True
         response.message = (
-            f"Published safe placeholder pose '{pose_name}' to {self._trajectory_topic}"
+            f"Published safe placeholder pose '{pose_name}' to {self._trajectory_topic} "
+            f"({subscription_count} subscriber(s))"
         )
         self.get_logger().info(response.message)
         return response
+
+    def _ensure_arm_enabled(self) -> None:
+        if not self._enable_arm_client.wait_for_service(timeout_sec=0.5):
+            return
+
+        request = SetBool.Request()
+        request.data = True
+        future = self._enable_arm_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+        result = future.result()
+        if result is None:
+            self.get_logger().warning("Failed to enable arm control before sending trajectory")
+            return
+
+        if result.success:
+            self.get_logger().info(result.message)
+        else:
+            self.get_logger().warning(result.message)
+
+    def _wait_for_subscribers(self, timeout_sec: float) -> int:
+        deadline = self.get_clock().now().nanoseconds + int(timeout_sec * 1e9)
+        subscription_count = self._publisher.get_subscription_count()
+        while subscription_count == 0 and self.get_clock().now().nanoseconds < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            subscription_count = self._publisher.get_subscription_count()
+        return subscription_count
 
 
 def main(args=None) -> None:
