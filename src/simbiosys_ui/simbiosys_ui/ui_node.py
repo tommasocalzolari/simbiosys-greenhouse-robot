@@ -1,6 +1,7 @@
 import copy
 import json
 import math
+import os
 import socket
 import threading
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
@@ -33,6 +35,8 @@ except ImportError:
 
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "rosTopics.json"
+DEFAULT_WEB_HOST = "0.0.0.0"
+DEFAULT_WEB_PORT = 8080
 DEFAULT_CONFIG = {
     "rosbridgeUrl": "ws://localhost:9090",
     "dummyMode": True,
@@ -792,6 +796,50 @@ def load_config() -> dict:
     return config
 
 
+def env_web_port() -> int:
+    value = os.getenv("SIMBIOSYS_UI_PORT")
+    if not value:
+        return DEFAULT_WEB_PORT
+    try:
+        port = int(value)
+    except ValueError:
+        return DEFAULT_WEB_PORT
+    if 1 <= port <= 65535:
+        return port
+    return DEFAULT_WEB_PORT
+
+
+def request_hostname(host_header: str) -> str:
+    if not host_header:
+        return "localhost"
+    host = host_header.rsplit("@", 1)[-1].strip()
+    if host.startswith("[") and "]" in host:
+        return host[1 : host.index("]")] or "localhost"
+    return host.rsplit(":", 1)[0] or "localhost"
+
+
+def dynamic_rosbridge_url(configured_url: str, host_header: str) -> str:
+    """Use the current browser host when config points at local loopback."""
+    parsed = urlparse(configured_url or "")
+    if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+        return configured_url
+    if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return configured_url
+    hostname = request_hostname(host_header)
+    port = parsed.port or 9090
+    netloc = f"[{hostname}]:{port}" if ":" in hostname else f"{hostname}:{port}"
+    return urlunparse(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path or "",
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def default_flowers() -> dict:
     colors = ("purple", "yellow", "red", "white", "pink")
     data = {}
@@ -872,13 +920,23 @@ class UiNode(Node):
     def __init__(self) -> None:
         super().__init__("ui_node")
         self._config = load_config()
-        self.declare_parameter("web_host", "0.0.0.0")
-        self.declare_parameter("web_port", 8080)
+        self.declare_parameter(
+            "web_host",
+            os.getenv("SIMBIOSYS_UI_HOST", DEFAULT_WEB_HOST),
+        )
+        self.declare_parameter("web_port", env_web_port())
         self.declare_parameter("dummy_mode", bool(self._config["dummyMode"]))
 
         parameter_dummy = self.get_parameter("dummy_mode").value
         self._config["dummyMode"] = bool(parameter_dummy)
         self._topics = self._config["topics"]
+        self.declare_parameter("cmd_vel_topic", self._topics["cmdVel"])
+        self.declare_parameter("image_topic", self._topics["cameraRaw"])
+        self.declare_parameter(
+            "compressed_image_topic",
+            self._topics["cameraCompressed"],
+        )
+        self._apply_topic_parameters()
 
         self._web_host = self.get_parameter("web_host").value
         self._web_port = int(self.get_parameter("web_port").value)
@@ -986,13 +1044,32 @@ class UiNode(Node):
         )
         self._http_thread.start()
 
-        self.get_logger().info(
-            f"Web UI listening on http://{self._display_host()}:{self._web_port}"
-        )
+        self._log_startup_urls()
         self.get_logger().info(
             f"Publishing Twist to {self._topics['cmdVel']}; dummy mode: "
             f"{self._config['dummyMode']}"
         )
+
+    def _apply_topic_parameters(self) -> None:
+        configured_raw_image = (
+            self.get_parameter("image_topic").get_parameter_value().string_value
+        )
+        configured_compressed_image = (
+            self.get_parameter("compressed_image_topic")
+            .get_parameter_value()
+            .string_value
+        )
+        if (
+            configured_raw_image != self._topics["cameraRaw"]
+            and configured_compressed_image == self._topics["cameraCompressed"]
+        ):
+            configured_compressed_image = f"{configured_raw_image}/compressed"
+
+        self._topics["cmdVel"] = (
+            self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
+        )
+        self._topics["cameraRaw"] = configured_raw_image
+        self._topics["cameraCompressed"] = configured_compressed_image
 
     def destroy_node(self) -> bool:
         try:
@@ -1003,7 +1080,8 @@ class UiNode(Node):
         self._http_server.server_close()
         return super().destroy_node()
 
-    def _display_host(self) -> str:
+    def _detect_lan_ip(self) -> str:
+        """Best-effort LAN IP detection for startup guidance."""
         if self._web_host not in ("", "0.0.0.0"):
             return self._web_host
         try:
@@ -1011,7 +1089,36 @@ class UiNode(Node):
                 sock.connect(("8.8.8.8", 80))
                 return sock.getsockname()[0]
         except OSError:
-            return "localhost"
+            pass
+        try:
+            for address in socket.gethostbyname_ex(socket.gethostname())[2]:
+                if not address.startswith("127."):
+                    return address
+        except OSError:
+            pass
+        return ""
+
+    def _log_startup_urls(self) -> None:
+        self.get_logger().info(
+            f"Web UI listening on {self._web_host}:{self._web_port}"
+        )
+        self.get_logger().info(f"Local URL: http://localhost:{self._web_port}")
+        if self._web_host in {"127.0.0.1", "localhost", "::1"}:
+            self.get_logger().info(
+                "LAN access is disabled because the UI is bound to a loopback host."
+            )
+            return
+        lan_ip = self._detect_lan_ip()
+        if lan_ip:
+            self.get_logger().info(
+                f"LAN URL: http://{lan_ip}:{self._web_port} "
+                "(same trusted local network only)"
+            )
+        else:
+            self.get_logger().info(
+                "LAN IP not detected. Run `hostname -I` and open "
+                f"http://<LAPTOP_LAN_IP>:{self._web_port} from another device."
+            )
 
     def _make_handler(self):
         node = self
@@ -1024,7 +1131,7 @@ class UiNode(Node):
                 if self.path in ("/", "/index.html", "/teleop"):
                     self._send_html()
                 elif self.path == "/api/status":
-                    self._send_json(node.status_payload())
+                    self._send_json(node.status_payload(self.headers.get("Host", "")))
                 elif self.path == "/stream.mjpg":
                     self._send_stream()
                 else:
@@ -1103,11 +1210,14 @@ class UiNode(Node):
         with self._frame_lock:
             return self._latest_jpeg
 
-    def status_payload(self) -> dict:
+    def status_payload(self, host_header: str = "") -> dict:
         return {
             "dummyMode": bool(self._config["dummyMode"]),
             "rosConnected": True,
-            "rosbridgeUrl": self._config["rosbridgeUrl"],
+            "rosbridgeUrl": dynamic_rosbridge_url(
+                self._config["rosbridgeUrl"],
+                host_header,
+            ),
             "topics": self._topics,
             "cameraReady": self.latest_frame() is not None,
             "beds": summarize_beds(self._flowers),

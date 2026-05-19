@@ -19,6 +19,14 @@ Open:
 http://localhost:8080
 ```
 
+The UI also listens on the trusted local network by default. To open it from a phone/tablet/laptop on the same Wi-Fi, find the laptop IP with `hostname -I` and open:
+
+```text
+http://<LAPTOP_LAN_IP>:8080
+```
+
+See `docs/network_access.md` for setup, test, firewall, and rosbridge notes. Do not expose the UI to the public internet or use router port forwarding.
+
 The first screen is the dashboard with a 2D greenhouse digital twin map, flower-level plant health, bed summaries, and a concise report. Use the **Teleop / Camera** button to open the separate camera and teleoperation page.
 
 The dummy greenhouse map contains exactly three beds:
@@ -81,11 +89,13 @@ Operation mode is intentionally not part of this UI because the robot LED handle
 
 ## ROS Connection
 
-The current UI runs as a ROS node and publishes/subscribes directly with `rclpy`. The config still includes `rosbridgeUrl` for future browser-native integration, defaulting to:
+The current UI runs as a ROS node and publishes/subscribes directly with `rclpy`. The browser uses relative API and camera URLs, so remote clients connect back to the laptop that served the page. The config still includes `rosbridgeUrl` for future browser-native integration, defaulting to:
 
 ```text
 ws://localhost:9090
 ```
+
+When `/api/status` is requested remotely, localhost rosbridge defaults are reported with the current page hostname, such as `ws://192.168.1.50:9090`, so remote clients do not try to connect to their own localhost.
 
 To start rosbridge when installed:
 
