@@ -1,0 +1,10 @@
+uint8 IDLE=0
+uint8 TELEOP=1
+uint8 MAP=2
+uint8 LOCALIZE=3
+uint8 INSPECT_BED=4
+uint8 INSPECT_FLOWER=5
+uint8 HARVEST=6
+uint8 ARM_TEST=7
+
+uint8 type

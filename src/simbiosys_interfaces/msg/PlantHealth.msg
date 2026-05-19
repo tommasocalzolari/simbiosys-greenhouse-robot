@@ -1,0 +1,13 @@
+string flower_id
+string bed_id
+float32 height_cm
+string color
+string health
+string growth_stage
+bool bug_detected
+bool flower_detected
+bool ready_for_harvest
+float32 confidence
+builtin_interfaces/Time last_scan_time
+string notes
+geometry_msgs/Point position

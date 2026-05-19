@@ -10,6 +10,7 @@
     "amclPose": "/amcl_pose",
     "plantHealth": "/plant_health",
     "plantHealthReport": "/plant_health_report",
+    "bedObservation": "simbiosys/bed_observation",
     "flowerDetections": "/flower_detections",
     "inspectBedCommand": "/ui/inspect_bed",
     "battery": "/battery_state"

@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 # Pixi/conda environments can expose Python to CMake's Python3 finder while
@@ -22,8 +23,13 @@ set(Python_NumPy_INCLUDE_DIRS "${Python3_NumPy_INCLUDE_DIRS}" CACHE PATH "" FORC
 find_package(rosidl_default_generators REQUIRED)
 
 set(msg_files
+  "msg/BedObservation.msg"
+  "msg/BehaviorType.msg"
+  "msg/DetectedTag.msg"
   "msg/FlowerData.msg"
+  "msg/MappingStatus.msg"
   "msg/PlantAnalysis.msg"
+  "msg/PlantHealth.msg"
   "msg/TaskStatus.msg"
 )
 
@@ -33,15 +39,16 @@ set(srv_files
 )
 
 set(action_files
-  "action/MoveToTarget.action"
   "action/ExecuteArmMotion.action"
+  "action/ExecuteBehavior.action"
+  "action/MoveToTarget.action"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${msg_files}
   ${srv_files}
   ${action_files}
-  DEPENDENCIES geometry_msgs
+  DEPENDENCIES builtin_interfaces geometry_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

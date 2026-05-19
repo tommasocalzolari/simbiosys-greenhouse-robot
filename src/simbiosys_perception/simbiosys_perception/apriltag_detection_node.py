@@ -4,9 +4,12 @@ import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge, CvBridgeError
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Int32, String
+
+from simbiosys_interfaces.msg import BedObservation, DetectedTag
 
 
 class AprilTagDetectionNode(Node):
@@ -41,6 +44,11 @@ class AprilTagDetectionNode(Node):
             "/simbiosys/current_bed_id",
             10,
         )
+        self._bed_observation_publisher = self.create_publisher(
+            BedObservation,
+            "simbiosys/bed_observation",
+            10,
+        )
         self._image_subscription = self.create_subscription(
             Image,
             self._camera_topic,
@@ -50,7 +58,7 @@ class AprilTagDetectionNode(Node):
 
         self.get_logger().info(
             f"AprilTag detection listening on {self._camera_topic}, "
-            "publishing /simbiosys/detected_tags and /simbiosys/current_bed_id"
+            "publishing simbiosys/bed_observation with legacy tag topics"
         )
 
     def _on_image(self, image_msg: Image) -> None:
@@ -127,6 +135,36 @@ class AprilTagDetectionNode(Node):
             self.get_logger().info("Detected AprilTag IDs: []")
 
         self._current_bed_publisher.publish(current_bed_msg)
+        self._publish_bed_observation(detections, current_bed_msg.data)
+
+    def _publish_bed_observation(
+        self,
+        detections: list[dict[str, float | int]],
+        bed_id: int,
+    ) -> None:
+        msg = BedObservation()
+        msg.bed_id = bed_id
+        msg.visible = bed_id >= 0
+        msg.message = (
+            f"Visible bed tag {bed_id}"
+            if msg.visible
+            else "No AprilTag bed marker visible"
+        )
+
+        msg.tags = []
+        for detection in detections:
+            tag = DetectedTag()
+            tag.id = int(detection["id"])
+            tag.center_px = Point(
+                x=float(detection["center_x"]),
+                y=float(detection["center_y"]),
+                z=0.0,
+            )
+            tag.area = float(detection["area"])
+            tag.confidence = 1.0
+            msg.tags.append(tag)
+
+        self._bed_observation_publisher.publish(msg)
 
 
 def main(args=None) -> None:

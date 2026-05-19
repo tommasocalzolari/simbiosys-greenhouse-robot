@@ -18,9 +18,11 @@ from sensor_msgs.msg import BatteryState, CompressedImage, Image
 from std_msgs.msg import String
 
 try:
-    from simbiosys_interfaces.msg import FlowerData
+    from simbiosys_interfaces.msg import BedObservation, FlowerData, PlantHealth
 except ImportError:
+    BedObservation = None
     FlowerData = None
+    PlantHealth = None
 
 try:
     import cv2
@@ -43,6 +45,7 @@ DEFAULT_CONFIG = {
         "amclPose": "/amcl_pose",
         "plantHealth": "/plant_health",
         "plantHealthReport": "/plant_health_report",
+        "bedObservation": "simbiosys/bed_observation",
         "flowerDetections": "/flower_detections",
         "inspectBedCommand": "/ui/inspect_bed",
         "battery": "/battery_state",
@@ -891,6 +894,7 @@ class UiNode(Node):
         self._robot_pose = {"x": 1.5, "y": 1.0, "yaw": 0.0}
         self._battery_percent = 86.0 if self._config["dummyMode"] else None
         self._external_report = None
+        self._bed_observations = {}
         self._last_dummy_tick = 0
 
         self._cmd_vel_publisher = self.create_publisher(
@@ -935,6 +939,20 @@ class UiNode(Node):
             self._on_plant_health,
             10,
         )
+        if PlantHealth is not None:
+            self.create_subscription(
+                PlantHealth,
+                "simbiosys/plant_health",
+                self._on_typed_plant_health,
+                10,
+            )
+        if BedObservation is not None:
+            self.create_subscription(
+                BedObservation,
+                self._topics.get("bedObservation", "simbiosys/bed_observation"),
+                self._on_bed_observation,
+                10,
+            )
         self.create_subscription(
             String,
             self._topics["plantHealthReport"],
@@ -1098,6 +1116,7 @@ class UiNode(Node):
             "map": self._map,
             "robotPose": self._robot_pose,
             "batteryPercent": self._battery_percent,
+            "bedObservations": copy.deepcopy(self._bed_observations),
             "teleop": sorted(self._active_controls),
         }
 
@@ -1235,6 +1254,59 @@ class UiNode(Node):
             f"Applied legacy bed-level plant health update to Bed {bed_id}"
         )
         self._external_report = None
+
+    def _on_typed_plant_health(self, msg) -> None:
+        flower_id = str(msg.flower_id).upper()
+        if not flower_id:
+            flower_id = f"{str(msg.bed_id).upper() or 'A'}1"
+
+        payload = {
+            "flower_id": flower_id,
+            "bed_id": str(msg.bed_id).upper() or flower_id[0:1],
+            "height_cm": round(float(msg.height_cm), 1),
+            "color": msg.color or "unknown",
+            "health": msg.health or "unknown",
+            "growth_stage": msg.growth_stage or "unknown",
+            "bug_detected": bool(msg.bug_detected),
+            "flower_detected": bool(msg.flower_detected),
+            "ready_for_harvest": bool(msg.ready_for_harvest),
+            "confidence": float(msg.confidence),
+            "last_scan_time": self._time_msg_to_iso(msg.last_scan_time),
+            "notes": msg.notes,
+        }
+        self._update_flower_from_payload(flower_id, payload)
+        self._external_report = None
+
+    def _on_bed_observation(self, msg) -> None:
+        bed_id = str(msg.bed_id)
+        if msg.bed_id < 0:
+            bed_id = "none"
+        self._bed_observations[bed_id] = {
+            "bed_id": msg.bed_id,
+            "visible": bool(msg.visible),
+            "message": msg.message,
+            "tags": [
+                {
+                    "id": tag.id,
+                    "center_x": tag.center_px.x,
+                    "center_y": tag.center_px.y,
+                    "area": tag.area,
+                    "confidence": tag.confidence,
+                }
+                for tag in msg.tags
+            ],
+            "last_seen": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _time_msg_to_iso(self, msg) -> str:
+        seconds = int(msg.sec)
+        nanoseconds = int(msg.nanosec)
+        if seconds <= 0 and nanoseconds <= 0:
+            return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return datetime.fromtimestamp(
+            seconds + nanoseconds / 1_000_000_000.0,
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds")
 
     def _update_flower_from_payload(self, flower_id: str, payload: dict) -> None:
         bed_id = str(payload.get("bed_id", flower_id[0:1])).upper()
