@@ -10,14 +10,26 @@ Visualization Manager:
       Value: true
     - Alpha: 0.75
       Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
       Name: Map
       Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /map
+      Use Timestamp: false
       Value: true
     - Class: rviz_default_plugins/LaserScan
       Name: LaserScan
       Size (m): 0.04
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /scan
       Value: true
     - Alpha: 0.7
@@ -32,7 +44,12 @@ Visualization Manager:
         Value: /particle_cloud
       Value: true
     - Class: rviz_default_plugins/RobotModel
+      Description Source: Topic
       Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /robot_description
       Name: RobotModel
       Value: true

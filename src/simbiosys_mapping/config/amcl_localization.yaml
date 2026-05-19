@@ -1,46 +1,68 @@
 amcl:
   ros__parameters:
+    # Time source; launch overrides this for simulation vs real robot.
     use_sim_time: false
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+
+    # Motion noise model. Higher values mean AMCL trusts odometry less.
+    alpha1: 0.4
+    alpha2: 0.4
+    alpha3: 0.3
+    alpha4: 0.3
+    alpha5: 0.4
+
+    # TF frames. AMCL publishes map -> odom and reads odom -> base_link.
     base_frame_id: base_link
+    global_frame_id: map
+    odom_frame_id: odom
+
+    # Optional laser beam skipping for poor/partial scans.
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
     beam_skip_threshold: 0.3
     do_beamskip: false
-    global_frame_id: map
+
+    # Laser sensor model.
     lambda_short: 0.1
     laser_likelihood_max_dist: 2.0
     laser_max_range: 12.0
     laser_min_range: -1.0
     laser_model_type: likelihood_field
     max_beams: 60
-    max_particles: 2000
-    min_particles: 500
-    odom_frame_id: odom
+
+    # Particle filter size and convergence settings.
+    max_particles: 3000
+    min_particles: 1000
     pf_err: 0.05
     pf_z: 0.99
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
+
+    # Use omni model for the MIRTE/mecanum base.
     robot_model_type: nav2_amcl::OmniMotionModel
+
+    # Pose saving and TF behavior.
     save_pose_rate: 0.5
-    sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.2
-    update_min_d: 0.25
+
+    # Minimum motion before AMCL processes another update.
+    update_min_a: 0.1
+    update_min_d: 0.1
+
+    # Laser model weights. They control how scans are scored against the map.
+    sigma_hit: 0.2
     z_hit: 0.5
     z_max: 0.05
     z_rand: 0.5
     z_short: 0.05
+
+    # Laser scan topic.
     scan_topic: /scan
 
 map_server:
   ros__parameters:
+    # Map server loads the YAML path passed by localization.launch.py.
     use_sim_time: false
     yaml_filename: ""
     topic_name: map
@@ -48,6 +70,7 @@ map_server:
 
 lifecycle_manager_localization:
   ros__parameters:
+    # Automatically configure and activate map_server and amcl.
     use_sim_time: false
     autostart: true
     node_names:

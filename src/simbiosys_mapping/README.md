@@ -1,3 +1,13 @@
+### Connecting to robot 
+
+```text
+export ROS_DOMAIN_ID=0
+export ROS_LOCALHOST_ONLY=0
+ros2 daemon stop
+ros2 daemon start
+```
+
+
 # simbiosys_mapping
 
 Mapping and localization package for the SimBioSys MIRTE workspace.
@@ -48,6 +58,11 @@ Main files:
 - `worlds/static_obstacles.world`: Gazebo world for simulation tests.
 - `rviz/getmap.rviz`: RViz layout for building a map.
 - `rviz/localization.rviz`: RViz layout for localizing in a saved map.
+
+For real-robot map quality checks and parameter tuning, see
+[`docs/slam_debug_tuning.md`](../../docs/slam_debug_tuning.md).
+For AMCL localization checks and tuning, see
+[`docs/localization_debug_tuning.md`](../../docs/localization_debug_tuning.md).
 
 ## Important Concept
 
