@@ -23,6 +23,8 @@ setup(
             "plant_analysis_node = simbiosys_perception.plant_analysis_node:main",
             "bug_detection_node = simbiosys_perception.bug_detection_node:main",
             "flower_detection_node = simbiosys_perception.flower_detection_node:main",
+            "apriltag_detection_node = "
+            "simbiosys_perception.apriltag_detection_node:main",
         ],
     },
 )
