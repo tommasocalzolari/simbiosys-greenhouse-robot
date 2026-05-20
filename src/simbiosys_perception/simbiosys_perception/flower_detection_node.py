@@ -17,7 +17,6 @@ class FlowerDetection:
     top_pixel: tuple[int, int]
     color_label: str
     contour_area: float
-    convexity_ratio: float
 
 
 class FlowerDetectionNode(Node):
@@ -31,16 +30,18 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("output_topic", "simbiosys/flower_data")
         self.declare_parameter("min_contour_area", 5000.0)
         self.declare_parameter("morph_kernel_size", 7)
-        self.declare_parameter("convexity_threshold", 0.6)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("depth_roi_radius_px", 4)
         self.declare_parameter("focal_length_y_px", 615.0)
-        self.declare_parameter("magenta_hsv_lower", [140, 100, 80])
-        self.declare_parameter("magenta_hsv_upper", [170, 255, 255])
-        self.declare_parameter("light_pink_hsv_lower", [140, 20, 160])
-        self.declare_parameter("light_pink_hsv_upper", [175, 130, 255])
-        self.declare_parameter("white_hsv_lower", [0, 0, 190])
-        self.declare_parameter("white_hsv_upper", [179, 25, 255])
+        self.declare_parameter("camera_height_mm", 80.0)
+        self.declare_parameter("box_height_mm", 190.0)
+        self.declare_parameter("camera_distance_mm", 300.0)
+        self.declare_parameter("magenta_hsv_lower", [145, 100, 80])
+        self.declare_parameter("magenta_hsv_upper", [172, 255, 255])
+        self.declare_parameter("light_pink_hsv_lower", [0, 15, 160])
+        self.declare_parameter("light_pink_hsv_upper", [20, 60, 255])
+        self.declare_parameter("white_hsv_lower", [20, 25, 180])
+        self.declare_parameter("white_hsv_upper", [35, 140, 255])
 
         self._image_topic = (
             self.get_parameter("image_topic").get_parameter_value().string_value
@@ -73,11 +74,25 @@ class FlowerDetectionNode(Node):
         self._focal_length_y_px = (
             self.get_parameter("focal_length_y_px").get_parameter_value().double_value
         )
+        self._camera_height_mm = (
+            self.get_parameter("camera_height_mm").get_parameter_value().double_value
+        )
+        self._box_height_mm = (
+            self.get_parameter("box_height_mm").get_parameter_value().double_value
+        )
+        self._camera_distance_mm = (
+            self.get_parameter("camera_distance_mm").get_parameter_value().double_value
+        )
 
         self._bridge = CvBridge()
         self._latest_depth_m: np.ndarray | None = None
         self._principal_y_px: float | None = None
         self._publisher = self.create_publisher(FlowerData, output_topic, 10)
+        self._debug_image_publisher = self.create_publisher(
+            Image,
+            "/simbiosys/flower_debug_image",
+            10,
+        )
         self._image_subscription = self.create_subscription(
             Image,
             self._image_topic,
@@ -100,6 +115,11 @@ class FlowerDetectionNode(Node):
         self.get_logger().info(
             f"Flower detection listening on color={self._image_topic}, "
             f"depth={self._depth_topic}, publishing {output_topic}"
+        )
+        self.get_logger().info(
+            f"Flower height geometry camera_height={self._camera_height_mm:.1f}mm, "
+            f"box_height={self._box_height_mm:.1f}mm, "
+            f"camera_distance={self._camera_distance_mm:.1f}mm"
         )
 
     def _on_camera_info(self, camera_info_msg: CameraInfo) -> None:
@@ -134,6 +154,7 @@ class FlowerDetectionNode(Node):
         height_cm = self._estimate_height_cm(detection, frame.shape)
         msg = self._build_message(detection, height_cm, frame.shape)
         self._publisher.publish(msg)
+        self._publish_debug_image(frame, detection, height_cm, image_msg)
 
     def _detect_flower(self, frame: np.ndarray) -> FlowerDetection | None:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -191,7 +212,7 @@ class FlowerDetectionNode(Node):
     def _find_best_detection_for_mask(
         self,
         mask: np.ndarray,
-        hsv: np.ndarray,
+        _hsv: np.ndarray,
         color_label: str,
     ) -> FlowerDetection | None:
         contours, _ = cv2.findContours(
@@ -199,52 +220,36 @@ class FlowerDetectionNode(Node):
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE,
         )
-
-        best_detection: FlowerDetection | None = None
-        for contour in contours:
-            detection = self._detection_from_contour(contour, hsv, color_label)
-            if detection is None:
-                continue
-            if (
-                best_detection is None
-                or detection.contour_area > best_detection.contour_area
-            ):
-                best_detection = detection
-
-        return best_detection
-
-    def _detection_from_contour(
-        self,
-        contour: np.ndarray,
-        hsv: np.ndarray,
-        color_label: str,
-    ) -> FlowerDetection | None:
-        contour_area = cv2.contourArea(contour)
-        if contour_area < self._min_contour_area:
+        valid_contours = [
+            contour
+            for contour in contours
+            if cv2.contourArea(contour) > self._min_contour_area
+        ]
+        if not valid_contours:
             return None
 
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
-        if hull_area <= 0.0:
-            return None
-
-        convexity_ratio = contour_area / hull_area
-        convexity_threshold = (
-            self.get_parameter("convexity_threshold")
-            .get_parameter_value()
-            .double_value
+        combined_points = np.vstack(valid_contours)
+        combined_area = float(
+            sum(cv2.contourArea(contour) for contour in valid_contours)
         )
-        if convexity_ratio < convexity_threshold:
-            return None
-        if color_label == "white" and self._is_beige_wood_region(contour, hsv):
-            return None
+        return self._detection_from_combined_contours(
+            combined_points,
+            color_label,
+            combined_area,
+        )
 
-        x, y, width, height = cv2.boundingRect(contour)
+    def _detection_from_combined_contours(
+        self,
+        combined_points: np.ndarray,
+        color_label: str,
+        contour_area: float,
+    ) -> FlowerDetection | None:
+        x, y, width, height = cv2.boundingRect(combined_points)
         aspect_ratio = width / float(height)
         if aspect_ratio < 0.4 or aspect_ratio > 2.5:
             return None
 
-        points = contour.reshape(-1, 2)
+        points = combined_points.reshape(-1, 2)
         top_y = int(points[:, 1].min())
         top_candidates = points[points[:, 1] == top_y]
         top_x = int(np.median(top_candidates[:, 0]))
@@ -253,19 +258,7 @@ class FlowerDetectionNode(Node):
             top_pixel=(top_x, top_y),
             color_label=color_label,
             contour_area=contour_area,
-            convexity_ratio=convexity_ratio,
         )
-
-    def _is_beige_wood_region(self, contour: np.ndarray, hsv: np.ndarray) -> bool:
-        contour_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        cv2.drawContours(contour_mask, [contour], -1, 255, thickness=cv2.FILLED)
-        contour_pixels = hsv[contour_mask == 255]
-        if contour_pixels.size == 0:
-            return False
-
-        median_hue = float(np.median(contour_pixels[:, 0]))
-        median_saturation = float(np.median(contour_pixels[:, 1]))
-        return 15.0 <= median_hue <= 30.0 and 20.0 <= median_saturation <= 60.0
 
     def _depth_image_to_meters(
         self,
@@ -295,32 +288,29 @@ class FlowerDetectionNode(Node):
         scale_x = depth_width / color_width
         scale_y = depth_height / color_height
 
-        x, y, width, height = detection.bbox
         top_x, top_y = detection.top_pixel
-        ground_x = x + width / 2.0
-        ground_y = y + height - 1
 
         top_depth_x = int(round(top_x * scale_x))
         top_depth_y = int(round(top_y * scale_y))
-        ground_depth_x = int(round(ground_x * scale_x))
-        ground_depth_y = int(round(ground_y * scale_y))
 
         top_depth_m = self._sample_depth_m(depth, top_depth_x, top_depth_y)
-        ground_depth_m = self._sample_depth_m(depth, ground_depth_x, ground_depth_y)
-        if top_depth_m is None or ground_depth_m is None:
+        if top_depth_m is None:
             return None
 
         principal_y = self._principal_y_px
         if principal_y is None:
             principal_y = depth_height / 2.0
 
+        # Geometry: camera is 8 cm above ground, horizontal, looking at a box
+        # from 30 cm away; the box top is 19 cm above ground.
         top_y_m = (top_depth_y - principal_y) * top_depth_m / self._focal_length_y_px
-        ground_y_m = (
-            (ground_depth_y - principal_y)
-            * ground_depth_m
-            / self._focal_length_y_px
+        flower_top_height_above_ground_mm = self._camera_height_mm - (
+            top_y_m * 1000.0
         )
-        return abs(ground_y_m - top_y_m) * 100.0
+        flower_height_above_box_mm = (
+            flower_top_height_above_ground_mm - self._box_height_mm
+        )
+        return flower_height_above_box_mm / 10.0
 
     def _sample_depth_m(
         self,
@@ -365,22 +355,68 @@ class FlowerDetectionNode(Node):
         center_y = y + height / 2.0
         bbox_area = float(width * height)
         frame_area = float(frame_width * frame_height)
+        height_value = height_cm if height_cm is not None else 0.0
 
         msg.detected = True
         msg.confidence = min(1.0, bbox_area / frame_area * 20.0)
-        msg.position = Point(x=center_x, y=center_y, z=height_cm or 0.0)
-        height_text = (
-            f"height_cm={height_cm:.1f}"
-            if height_cm is not None
-            else "height_cm=unknown"
-        )
+        msg.position = Point(x=center_x, y=center_y, z=height_value)
         msg.message = (
-            f"bbox x={x} y={y} width={width} height={height}; "
-            f"top_pixel x={detection.top_pixel[0]} y={detection.top_pixel[1]}; "
-            f"convexity={detection.convexity_ratio:.2f}; "
-            f"{height_text}"
+            f"color={detection.color_label}; bbox=({x},{y},{width},{height}); "
+            f"top=({detection.top_pixel[0]},{detection.top_pixel[1]}); "
+            f"height={height_value:.1f}cm"
         )
         return msg
+
+    def _publish_debug_image(
+        self,
+        frame: np.ndarray,
+        detection: FlowerDetection | None,
+        height_cm: float | None,
+        source_msg: Image,
+    ) -> None:
+        debug_frame = frame.copy()
+        if detection is not None:
+            x, y, width, height = detection.bbox
+            center = (int(x + width / 2.0), int(y + height / 2.0))
+            top_pixel = detection.top_pixel
+            height_value = height_cm if height_cm is not None else 0.0
+
+            cv2.rectangle(
+                debug_frame,
+                (x, y),
+                (x + width, y + height),
+                (0, 255, 0),
+                2,
+            )
+            cv2.circle(debug_frame, top_pixel, 6, (255, 0, 0), -1)
+            cv2.circle(debug_frame, center, 6, (0, 0, 255), -1)
+            cv2.putText(
+                debug_frame,
+                detection.color_label,
+                (x, max(25, y - 30)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
+            cv2.putText(
+                debug_frame,
+                f"h={height_value:.1f}cm",
+                (x, max(50, y - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
+
+        try:
+            debug_msg = self._bridge.cv2_to_imgmsg(debug_frame, encoding="bgr8")
+        except CvBridgeError as exc:
+            self.get_logger().warning(f"Could not convert debug image: {exc}")
+            return
+
+        debug_msg.header = source_msg.header
+        self._debug_image_publisher.publish(debug_msg)
 
 
 def main(args=None) -> None:
