@@ -99,12 +99,32 @@ The real robot topic defaults remain:
 | Map | `/map` |
 | Color camera | `/camera/color/image_raw` |
 | Depth camera | `/camera/depth/image_raw` |
+| Depth point cloud | `/camera/depth/points` |
+| Gripper camera | `/gripper_camera/image_raw` |
+| Joint states | `/joint_states` |
 | Arm trajectory | `/mirte_master_arm_controller/joint_trajectory` |
+| Arm FollowJointTrajectory action | `/mirte_master_arm_controller/follow_joint_trajectory` |
 | Gripper action | `/mirte_master_gripper_controller/gripper_cmd` |
 
 Simulation keeps separate launch/config defaults, especially
 `/mirte_base_controller/cmd_vel_unstamped` and `/odom`. Keep using launch args
 or config files instead of hard-coding topic names in behavior code.
+
+Real robot TF notes from the May 2026 smoke test:
+
+- `/mirte_base_controller/odom` uses `frame_id: odom` and
+  `child_frame_id: base_link`.
+- `/scan` publishes `frame_id: laser`.
+- The main camera topics use `camera_color_optical_frame` and
+  `camera_depth_optical_frame`.
+- Before SLAM, localization, Nav2, or perception work, verify that the sensor
+  frames resolve from `base_link`:
+
+```bash
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo base_link laser
+ros2 run tf2_ros tf2_echo base_link camera_link
+```
 
 ### Behavior Commands
 
@@ -138,20 +158,60 @@ implemented by `simbiosys_mapping`. Teammates can implement those services
 against YAML files under `maps/<map_id>/` without changing the behavior action
 again.
 
-### Recommended Next TODOs
+### Team TODOs
 
-Keep the next work in thin vertical slices:
+Keep the next work in thin vertical slices. The behavior action and typed
+metadata/status interfaces are already in place, so each area can integrate
+against those contracts without changing the action payload immediately.
 
-1. Populate map metadata read/write in `simbiosys_mapping` using the existing
-   typed services.
-2. Add bed approach pose computation in `simbiosys_behavior` for
-   `ExecuteBehavior(NAVIGATE, target_id=<bed_id>)`.
-3. Add a single-position scan executor before full-bed scanning.
-4. Connect the UI backend to `ExecuteBehavior` and the new status topics.
-5. Add named arm poses for `scan`, `grab`, `remove`, `container_drop`, and
-   `stow` in `simbiosys_arm`.
-6. Keep physical harvesting disabled until scan results and arm/gripper poses
-   are validated on the real robot.
+#### Arm Planning
+
+- Validate named poses on the real robot: `scan`, `grab`, `remove`,
+  `container_drop`, and `stow`.
+- Keep the existing `SendNamedArmPose` service as the safe debug entry point.
+- Report arm command success/failure clearly enough for behavior status and UI.
+- Do non-cutting dry runs before connecting any physical harvest sequence.
+
+#### Base Planning
+
+- Verify `odom -> base_link`, `base_link -> laser`, and
+  `base_link -> camera_link` before SLAM/Nav2 tests.
+- Keep real robot defaults on `/mirte_base_controller/cmd_vel`,
+  `/mirte_base_controller/odom`, and `/scan`; use launch args for simulation
+  differences.
+- Bring up SLAM/localization/Nav2 outside the behavior manager.
+- Add bed approach pose computation from map metadata before full bed scanning.
+- Do not add a custom global planner unless Nav2 is proven insufficient.
+
+#### Perception
+
+- Publish typed `simbiosys/plant_health` updates while keeping the legacy UI
+  fallback until the UI is fully migrated.
+- Use the real camera topics by default:
+  `/camera/color/image_raw`, `/camera/depth/image_raw`, and
+  `/gripper_camera/image_raw`.
+- Include active bed, flower, and scan-position context in detection results.
+- Report missed detections explicitly so scan behavior can retry or skip.
+
+#### UI
+
+- Connect UI commands to `simbiosys/execute_behavior`.
+- Display `simbiosys/task_status`, `simbiosys/navigation_status`,
+  `simbiosys/scan_progress`, and `simbiosys/harvest_status`.
+- Add map annotation, scan-position editing, and cleanup controls around the
+  typed metadata services.
+- Keep dummy mode useful without a robot, Gazebo, Nav2, or camera data.
+
+#### Behavior, Scheduling, And Interfaces
+
+- Keep `mission_manager_node` as a thin coordinator; launch files own SLAM,
+  localization, Nav2, perception, arm, gripper, and UI startup.
+- Implement metadata read/write services in `simbiosys_mapping`.
+- Add `ExecuteBehavior(NAVIGATE, target_id=<bed_id>)` by resolving bed approach
+  poses from metadata.
+- Add a single-position scan executor before full-bed scanning.
+- Keep `HARVEST` gated by `harvest_enabled` and returning `NOT_IMPLEMENTED`
+  until scan results and arm/gripper poses are validated on the real robot.
 
 Avoid adding a custom planner, automatic map cleanup, or a large new behavior
 action payload until the current contracts are exercised by real callers.
@@ -297,6 +357,9 @@ ros2 topic echo /joint_states --once
 ros2 topic echo /scan --once
 ros2 topic echo /mirte_base_controller/odom --once
 ros2 topic echo /camera/color/image_raw --once
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo base_link laser
+ros2 run tf2_ros tf2_echo base_link camera_link
 ros2 run tf2_tools view_frames
 ros2 action list
 ```

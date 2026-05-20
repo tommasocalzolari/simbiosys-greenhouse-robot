@@ -32,9 +32,21 @@ ros2 topic echo /joint_states --once
 ros2 topic echo /scan --once
 ros2 topic echo /mirte_base_controller/odom --once
 ros2 topic echo /camera/color/image_raw --once
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo base_link laser
+ros2 run tf2_ros tf2_echo base_link camera_link
 ros2 action list
 ```
 
 The current MIRTE Master odometry message uses `frame_id: odom` and
 `child_frame_id: base_link`, so the `slam_toolbox` frame names remain standard
 even though the odometry topic itself is controller-scoped.
+
+Real robot frame names observed in May 2026:
+
+- `/scan` uses `frame_id: laser`.
+- `/camera/color/image_raw` uses `frame_id: camera_color_optical_frame`.
+- `/camera/depth/image_raw` uses `frame_id: camera_depth_optical_frame`.
+- The camera driver publishes camera-internal static frames under
+  `camera_link`; verify that `base_link -> camera_link` is present before
+  relying on camera data in map/base coordinates.

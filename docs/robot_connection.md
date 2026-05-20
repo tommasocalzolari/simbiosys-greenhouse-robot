@@ -35,4 +35,18 @@ ros2 topic echo /camera/color/image_raw --once
 ros2 action list
 ```
 
+Verify TF without RViz or other visualization packages:
+
+```bash
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo base_link laser
+ros2 run tf2_ros tf2_echo base_link camera_link
+```
+
+The real robot has been observed publishing `/scan` with `frame_id: laser`,
+color images with `camera_color_optical_frame`, and depth images with
+`camera_depth_optical_frame`. If `odom -> base_link` works but sensor transforms
+do not, check robot URDF/static transform bringup before debugging SLAM, Nav2,
+or perception code.
+
 Do not launch low-level robot bringup from `simbiosys_bringup`.

@@ -68,6 +68,22 @@ Keep all differences configurable through launch arguments and config files.
 The behavior layer should not hard-code real robot versus simulation topic
 choices.
 
+Real robot frame notes from the May 2026 compatibility smoke test:
+
+- `/mirte_base_controller/odom` uses `frame_id: odom` and
+  `child_frame_id: base_link`.
+- `/scan` uses `frame_id: laser`.
+- The main camera topics use `camera_color_optical_frame` and
+  `camera_depth_optical_frame`.
+- Before blaming behavior code for SLAM, Nav2, or perception failures, verify
+  the TF chain with:
+
+```bash
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo base_link laser
+ros2 run tf2_ros tf2_echo base_link camera_link
+```
+
 ## Recommended V1 Scope
 
 The first version should be deliberately simple to execute and debug.
@@ -78,8 +94,8 @@ The first version should be deliberately simple to execute and debug.
 2. Keep `ExecuteBehavior.action` small for V1. Use its current `behavior`,
    `target_id`, and `target_pose` fields where possible, plus typed metadata
    services. Expand the action only when real callers need richer payloads.
-3. Add typed metadata and status interfaces before adding complex behavior
-   logic.
+3. Keep typed metadata and status interfaces stable before adding complex
+   behavior logic.
 4. Implement `NAVIGATE` as a direct Nav2 `NavigateToPose` action client.
 5. Implement `INSPECT_BED` as sequential Nav2 goals plus arm named poses plus
    plant-health updates.
@@ -102,8 +118,8 @@ Every behavior should have a dry-run or debug path:
 
 ## BehaviorType Mapping
 
-Current enum values already cover most behavior names. Add one navigation
-behavior type for clarity.
+Current enum values cover the V1 behavior names, including a dedicated
+navigation behavior type for clarity.
 
 | Behavior | Mapping |
 | --- | --- |
@@ -535,23 +551,22 @@ Keep these fallbacks for now:
 
 ### `simbiosys_interfaces`
 
-- Add `NAVIGATE` to `BehaviorType`.
-- Add `BedRectangle`, `ScanPosition`, `MapMetadata`, `NavigationStatus`,
-  `ScanProgress`, and `HarvestStatus`.
-- Add metadata and harvest-enabled services.
+- The V1 behavior, metadata, status, and harvest flag interfaces exist.
 - Keep `ExecuteBehavior` compatible for V1.
-- Add richer `ExecuteBehavior` fields only after callers need them.
+- Add richer `ExecuteBehavior` fields only after real callers need them.
+- Treat metadata services as contracts that mapping can implement without
+  changing behavior action clients.
 
 ### `simbiosys_behavior`
 
-- Replace placeholder mode-only behavior handling with behavior executors.
-- Add shared lifecycle, cancel, feedback, and failure handling.
-- Add Nav2 `NavigateToPose` client.
+- Keep `mission_manager_node` as a thin coordinator.
+- Keep shared lifecycle, cancel, feedback, and failure handling centralized.
+- Keep the Nav2 `NavigateToPose` client configurable by action name.
 - Add metadata service clients.
 - Add arm named-pose service client.
 - Add gripper service/action client as needed.
-- Add scan loop orchestration.
-- Add harvest-enabled flag services.
+- Add scan loop orchestration after single-position scan works.
+- Keep harvest disabled by default until real scan and arm/gripper validation.
 
 ### `simbiosys_mapping`
 
@@ -570,6 +585,8 @@ Keep these fallbacks for now:
   path execution into a thin Nav2 wrapper.
 - Add a safe teleop arbiter if behavior cancellation must reliably stop UI
   teleop.
+- Verify real robot TF before mapping/navigation: `odom -> base_link`,
+  `base_link -> laser`, and `base_link -> camera_link`.
 
 ### `simbiosys_arm`
 
