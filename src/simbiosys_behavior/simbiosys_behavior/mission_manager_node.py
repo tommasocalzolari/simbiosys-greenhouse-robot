@@ -20,12 +20,13 @@ from rclpy.parameter import Parameter
 from sensor_msgs.msg import LaserScan
 
 from simbiosys_behavior.state_machine import MissionStateMachine
-from simbiosys_interfaces.action import ExecuteBehavior
+from simbiosys_interfaces.action import ExecuteBedSideScan, ExecuteBehavior
 from simbiosys_interfaces.msg import (
     BehaviorType,
     HarvestStatus,
     NavigationStatus,
     ScanProgress,
+    ScanPosition,
     TaskStatus,
 )
 from simbiosys_interfaces.srv import (
@@ -74,6 +75,7 @@ class MissionManagerNode(Node):
         self._topic_health = TopicHealth()
         self._topic_lock = threading.Lock()
         self._active_nav_goal_handle = None
+        self._active_bed_side_goal_handle = None
         self._latest_pose = PoseStamped()
         self._latest_path = Path()
 
@@ -85,8 +87,15 @@ class MissionManagerNode(Node):
         self.declare_parameter("nav_plan_topic", "/plan")
         self.declare_parameter("cmd_vel_topic", "/mirte_base_controller/cmd_vel")
         self.declare_parameter("nav2_action_name", "navigate_to_pose")
+        self.declare_parameter(
+            "bed_side_scan_action_name",
+            "simbiosys/execute_bed_side_scan",
+        )
         self.declare_parameter("nav2_server_timeout_sec", 2.0)
+        self.declare_parameter("bed_side_scan_server_timeout_sec", 0.5)
         self.declare_parameter("require_localization_for_navigation", True)
+        self.declare_parameter("bed_side_scan_dry_run", True)
+        self.declare_parameter("min_flowers_per_bed_side", 1)
 
         self._harvest_enabled = bool(self.get_parameter("harvest_enabled").value)
 
@@ -145,6 +154,12 @@ class MissionManagerNode(Node):
                 self._string_parameter("nav2_action_name"),
                 callback_group=self._callback_group,
             )
+        self._bed_side_scan_client = ActionClient(
+            self,
+            ExecuteBedSideScan,
+            self._string_parameter("bed_side_scan_action_name"),
+            callback_group=self._callback_group,
+        )
 
         self._execute_behavior_server = ActionServer(
             self,
@@ -202,6 +217,9 @@ class MissionManagerNode(Node):
 
     def _bool_parameter(self, name: str) -> bool:
         return self.get_parameter(name).get_parameter_value().bool_value
+
+    def _int_parameter(self, name: str) -> int:
+        return self.get_parameter(name).get_parameter_value().integer_value
 
     def _mark_seen(self, key: str) -> None:
         with self._topic_lock:
@@ -510,27 +528,131 @@ class MissionManagerNode(Node):
         success, message = self._set_mode_for_behavior(BehaviorType.INSPECT_BED)
         if not success:
             return False, message
-        bed_id = goal_handle.request.target_id.strip()
-        if not bed_id:
+        target_id = goal_handle.request.target_id.strip()
+        if not target_id:
             message = (
                 f"{FailureCode.PRECONDITION_FAILED}: "
-                "INSPECT_BED requires target_id=<bed_id>"
+                "INSPECT_BED requires target_id=<bed_id>:<side>, for example bed_1:a"
             )
             self._publish_scan_progress(message, error=True)
             return False, message
+        parsed_target = self._parse_bed_side_target(target_id)
+        if parsed_target is None:
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "INSPECT_BED debug scanning expects target_id=<bed_id>:<side> "
+                "where side is 'a' or 'b'"
+            )
+            self._publish_scan_progress(message, active_bed_id=target_id, error=True)
+            return False, message
+
+        bed_id, side = parsed_target
+        self._publish_feedback(
+            goal_handle,
+            f"Preparing bed-side scan for {bed_id}:{side}",
+            0.15,
+        )
+        return self._execute_bed_side_scan(goal_handle, bed_id, side)
+
+    def _execute_bed_side_scan(
+        self,
+        goal_handle,
+        bed_id: str,
+        side: str,
+    ) -> tuple[bool, str]:
+        timeout_sec = self._double_parameter("bed_side_scan_server_timeout_sec")
+        if not self._bed_side_scan_client.wait_for_server(timeout_sec=timeout_sec):
+            message = (
+                f"{FailureCode.PRECONDITION_FAILED}: "
+                "bed-side scan controller action is unavailable"
+            )
+            self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
+            return False, message
+
+        goal = ExecuteBedSideScan.Goal()
+        goal.bed_id = bed_id
+        goal.side = side
+        goal.start_endpoint = self._side_endpoint(
+            bed_id,
+            side,
+            "start",
+            goal_handle.request.target_pose,
+        )
+        goal.end_endpoint = self._side_endpoint(
+            bed_id,
+            side,
+            "end",
+            goal_handle.request.target_pose,
+        )
+        goal.min_flower_count = max(0, self._int_parameter("min_flowers_per_bed_side"))
+        goal.harvest_enabled = self._harvest_enabled
+        goal.dry_run = self._bool_parameter("bed_side_scan_dry_run")
+
         message = (
-            f"{FailureCode.NOT_IMPLEMENTED}: INSPECT_BED accepted for bed "
-            f"'{bed_id}', but scan-position execution is not implemented yet."
+            f"Starting bed-side scan controller for {bed_id}:{side}; "
+            f"dry_run={goal.dry_run}"
         )
         self._publish_scan_progress(
             message,
             active_bed_id=bed_id,
-            detection_status="waiting_for_scan_positions",
-            error=True,
+            active_scan_position_id=f"{bed_id}:{side}",
+            detection_status="starting_bed_side_scan",
         )
-        self._publish_feedback(goal_handle, message, 1.0)
-        # TODO: Load ScanPosition metadata, move to each pose with Nav2, then
-        # publish PlantHealth updates and ScanProgress retries/misses.
+        self._publish_feedback(goal_handle, message, 0.25)
+
+        send_goal_future = self._bed_side_scan_client.send_goal_async(
+            goal,
+            feedback_callback=lambda feedback: self._on_bed_side_scan_feedback(
+                goal_handle,
+                feedback,
+            ),
+        )
+        send_deadline = time.monotonic() + 5.0
+        while rclpy.ok() and not send_goal_future.done():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            if time.monotonic() >= send_deadline:
+                message = (
+                    f"{FailureCode.PRECONDITION_FAILED}: "
+                    "timed out sending bed-side scan goal"
+                )
+                self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
+                return False, message
+            time.sleep(0.05)
+
+        bed_side_goal_handle = send_goal_future.result()
+        if bed_side_goal_handle is None or not bed_side_goal_handle.accepted:
+            message = f"{FailureCode.PLANNING_FAILED}: bed-side scan rejected"
+            self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
+            return False, message
+
+        self._active_bed_side_goal_handle = bed_side_goal_handle
+        result_future = bed_side_goal_handle.get_result_async()
+        while rclpy.ok() and not result_future.done():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            time.sleep(0.1)
+
+        self._active_bed_side_goal_handle = None
+        wrapped_result = result_future.result()
+        if wrapped_result is None:
+            message = f"{FailureCode.EXECUTION_FAILED}: bed-side scan returned no result"
+            self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
+            return False, message
+
+        result = wrapped_result.result
+        if result.success:
+            message = (
+                f"INSPECT_BED completed for {bed_id}:{side}; "
+                f"flowers_detected={result.flowers_detected}"
+            )
+            self._publish_feedback(goal_handle, message, 1.0)
+            return True, message
+
+        message = result.message or f"{FailureCode.EXECUTION_FAILED}: bed-side scan failed"
+        self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
         return False, message
 
     def _execute_inspect_flower(self, goal_handle) -> tuple[bool, str]:
@@ -604,6 +726,16 @@ class MissionManagerNode(Node):
         self._publish_feedback(goal_handle, "Nav2 driving", progress)
         self._publish_navigation_status("driving", "Nav2 driving")
 
+    def _on_bed_side_scan_feedback(self, goal_handle, feedback_msg) -> None:
+        feedback = feedback_msg.feedback
+        step = (
+            f"Bed-side scan {feedback.phase}: "
+            f"flowers={feedback.flowers_detected}, retries={feedback.retry_count}"
+        )
+        if feedback.message:
+            step = feedback.message
+        self._publish_feedback(goal_handle, step, feedback.progress)
+
     def _cancel_active_work(self) -> None:
         self._publish_zero_twist()
         if self._active_nav_goal_handle is not None:
@@ -612,6 +744,12 @@ class MissionManagerNode(Node):
             except Exception as exc:
                 self.get_logger().warn(f"Could not cancel Nav2 goal: {exc}")
             self._active_nav_goal_handle = None
+        if self._active_bed_side_goal_handle is not None:
+            try:
+                self._active_bed_side_goal_handle.cancel_goal_async()
+            except Exception as exc:
+                self.get_logger().warn(f"Could not cancel bed-side scan goal: {exc}")
+            self._active_bed_side_goal_handle = None
 
     def _publish_zero_twist(self) -> None:
         self._cmd_vel_publisher.publish(Twist())
@@ -711,6 +849,41 @@ class MissionManagerNode(Node):
             pose.orientation.w,
         ]
         return all(math.isfinite(float(value)) for value in values)
+
+    def _parse_bed_side_target(self, target_id: str) -> tuple[str, str] | None:
+        parts = [part.strip() for part in target_id.split(":")]
+        if len(parts) != 2:
+            return None
+        bed_id, side = parts[0], parts[1].lower()
+        if not bed_id or side not in ("a", "b"):
+            return None
+        return bed_id, side
+
+    def _side_endpoint(
+        self,
+        bed_id: str,
+        side: str,
+        endpoint_name: str,
+        pose,
+    ) -> ScanPosition:
+        endpoint = ScanPosition()
+        endpoint.scan_position_id = f"{bed_id}:{side}:{endpoint_name}"
+        endpoint.bed_id = bed_id
+        endpoint.base_pose.x = float(pose.position.x)
+        endpoint.base_pose.y = float(pose.position.y)
+        endpoint.base_pose.theta = self._yaw_from_pose(pose)
+        endpoint.order = 0 if endpoint_name == "start" else 1
+        endpoint.enabled = True
+        return endpoint
+
+    def _yaw_from_pose(self, pose) -> float:
+        x = float(pose.orientation.x)
+        y = float(pose.orientation.y)
+        z = float(pose.orientation.z)
+        w = float(pose.orientation.w)
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(siny_cosp, cosy_cosp)
 
     def _set_mode_for_behavior(self, behavior: int) -> tuple[bool, str]:
         mode_by_behavior = {

@@ -135,7 +135,7 @@ ros2 run tf2_ros tf2_echo base_link camera_link
 | `MAP` | Sets mapping mode and checks scan/odom/map topics. | Finish-map command, bed annotation, cleanup, and metadata save are TODO. |
 | `LOCALIZE` | Checks scan/odom/map and waits for `/amcl_pose`. | Initial-pose workflow remains external/RViz or launch driven. |
 | `NAVIGATE` | Sends a Nav2 `NavigateToPose` goal from `target_pose`, with cancel and status. | Bed-ID approach pose from metadata is TODO. |
-| `INSPECT_BED` | Validates `target_id` and publishes scan status. | Actual scan-position execution is TODO and currently returns `NOT_IMPLEMENTED`. |
+| `INSPECT_BED` | Accepts debug bed-side targets like `bed_1:a` and delegates to the dry-run-safe bed-side controller action. | Real metadata endpoint lookup, perception-driven servoing, and physical motion remain TODO. |
 | `INSPECT_FLOWER` | Validates `target_id` and publishes scan status. | Single-position scan execution is TODO and currently returns `NOT_IMPLEMENTED`. |
 | `HARVEST` | Enforces `harvest_enabled`; rejects while disabled. | Physical harvest is TODO and currently returns `NOT_IMPLEMENTED` even when enabled. |
 | `ARM_TEST` | Preserves existing mode mapping. | Arm-specific execution remains in `simbiosys_arm`. |
@@ -148,7 +148,8 @@ manager does not start Nav2 for you; launch files still own system startup.
 These interfaces exist now and are intended for the next implementation slices:
 
 - `BedRectangle.msg`: map-frame bed rectangle and AprilTag association.
-- `ScanPosition.msg`: map-frame base pose for scanning one flower/position.
+- `ScanPosition.msg`: map-frame base pose. Reused for V1 bed-side `start` and
+  `end` route endpoints such as `bed_1:a:start`.
 - `MapMetadata.msg`: active map, cleaned map, beds, and scan positions.
 - Metadata services: `SaveMapWithMetadata`, `LoadMapMetadata`,
   `UpsertBedRectangle`, `DeleteBedRectangle`, `SetScanPositions`, `CleanupMap`.
@@ -209,7 +210,8 @@ against those contracts without changing the action payload immediately.
 - Implement metadata read/write services in `simbiosys_mapping`.
 - Add `ExecuteBehavior(NAVIGATE, target_id=<bed_id>)` by resolving bed approach
   poses from metadata.
-- Add a single-position scan executor before full-bed scanning.
+- Grow the bed-side controller from dry-run scaffold to perception-driven
+  distance/orientation/arm-height control.
 - Keep `HARVEST` gated by `harvest_enabled` and returning `NOT_IMPLEMENTED`
   until scan results and arm/gripper poses are validated on the real robot.
 
