@@ -1,0 +1,18 @@
+string bed_id
+string side
+simbiosys_interfaces/ScanPosition start_endpoint
+simbiosys_interfaces/ScanPosition end_endpoint
+uint32 min_flower_count
+bool harvest_enabled
+bool dry_run
+---
+bool success
+uint32 flowers_detected
+bool retry_used
+string message
+---
+string phase
+float32 progress
+uint32 flowers_detected
+uint32 retry_count
+string message

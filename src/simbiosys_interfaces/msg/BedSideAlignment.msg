@@ -1,0 +1,10 @@
+std_msgs/Header header
+string bed_id
+string side
+bool valid
+float32 distance_m
+float32 target_distance_m
+float32 distance_error_m
+float32 yaw_error_rad
+float32 confidence
+string message

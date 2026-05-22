@@ -88,16 +88,17 @@ ros2 action send_goal /simbiosys/execute_behavior \
   --feedback
 ```
 
-## Scan Placeholders
+## Bed-Side Scan Debug Path
 
-`INSPECT_BED` is behavior type `4`. The current implementation validates the
-bed ID and publishes scan status, then returns `NOT_IMPLEMENTED` until
-scan-position metadata and execution are wired in.
+`INSPECT_BED` is behavior type `4`. The current debug implementation expects a
+bed-side target in the form `<bed_id>:<side>`, where side is `a` or `b`, for
+example `bed_1:a`. With the default dry-run settings, it verifies the behavior
+and bed-side controller action plumbing without commanding robot motion.
 
 ```bash
 ros2 action send_goal /simbiosys/execute_behavior \
   simbiosys_interfaces/action/ExecuteBehavior \
-  "{behavior: {type: 4}, target_id: A, target_pose: {orientation: {w: 1.0}}}" \
+  "{behavior: {type: 4}, target_id: bed_1:a, target_pose: {orientation: {w: 1.0}}}" \
   --feedback
 ```
 

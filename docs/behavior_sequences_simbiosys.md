@@ -365,55 +365,61 @@ Failure and cancel behavior:
 
 ## Behavior 3: Scanning Mode
 
-Intent: visit scan positions for a bed, collect plant data, and publish
+Intent: scan one or both long sides of a bed, collect plant data, and publish
 plant-health updates.
 
 Behavior types:
 
-- `INSPECT_BED` for a full bed scan.
-- `INSPECT_FLOWER` for one flower or scan-position debug/rescan.
+- `INSPECT_BED` for a full bed scan or a debug bed-side scan.
+- `INSPECT_FLOWER` for one runtime flower debug/rescan once flower profiles
+  exist.
 
 Recommended V1 sequence:
 
-1. UI sends `ExecuteBehavior(INSPECT_BED, target_id=<bed_id>)`.
-2. Behavior manager loads scan positions for that bed.
-3. Behavior manager moves the arm to a scanning named pose.
-4. For each enabled scan position:
-   1. Navigate the base to the scan-position pose with Nav2.
-   2. Wait for camera/perception updates.
-   3. Wait for `PlantHealth` or plant-analysis result.
-   4. If no flower is detected, retry up to the configured retry count.
-   5. If still missed, publish an explicit missed/unknown health update.
-   6. If detected, publish/update typed plant health.
-   7. If `harvest_enabled` is true and the flower is ready, invoke the harvest
-      subroutine.
-5. Return arm to scan, stow, or idle pose as configured.
-6. Return behavior to idle.
+1. UI sends `ExecuteBehavior(INSPECT_BED, target_id=<bed_id>:<side>)` for the
+   debug path, for example `bed_1:a`.
+2. Behavior manager loads side `start` and `end` endpoints for that bed side.
+   V1 reuses `ScanPosition` entries such as `bed_1:a:start` and `bed_1:a:end`.
+3. Nav2 moves the base to the start endpoint.
+4. Behavior manager moves the arm to a scanning named pose.
+5. The bed-side controller moves incrementally from start to end while using
+   perception-provided bed distance and yaw error to maintain distance and
+   perpendicular orientation.
+6. At each wait point, perception analyzes the image and creates runtime flower
+   profiles when flowers are detected.
+7. If no flowers are detected or fewer than the configured per-side minimum are
+   found, retry once by scanning back along the same side.
+8. If `harvest_enabled` is true and perception marks a flower ready at the
+   correct height, invoke the harvest subroutine immediately.
+9. Return arm to scan, stow, or idle pose as configured.
+10. Schedule the next side, next bed, home, or idle depending on the active
+    workflow.
 
 Recommended defaults:
 
-- `scan_retry_count`: 2 or 3.
+- `min_flowers_per_bed_side`: behavior parameter fallback for debug scanning.
 - `scan_timeout_sec`: short enough for field debugging, for example 5-10 s.
 - `scan_settle_sec`: small delay after navigation before reading perception.
 
 Implementation notes:
 
-- Movement between scan positions should be base-only in V1; the arm stays in
-  scanning pose.
-- Each scan position should be testable by itself.
-- Plant IDs should be stable within metadata. Use `<bed_id>-<order>` or
-  explicit operator-provided flower IDs until a stronger tracking system exists.
-- Missed flowers should not abort the whole bed scan. Publish the miss and
-  continue.
+- Local bed-side movement belongs in a dedicated controller node, not directly
+  inside `mission_manager_node`.
+- The controller consumes perception messages for bed-relative distance/yaw and
+  flower bounding-box center. It should not interpret depth images itself.
+- Flower IDs are runtime profile IDs created when perception detects flowers.
+- Missed flowers should not abort the whole bed scan. Publish the miss/retry
+  state and continue.
 - Keep legacy plant-health JSON support in the UI while publishing typed
   `simbiosys/plant_health`.
 
 Failure and cancel behavior:
 
-- Missing scan positions: `PRECONDITION_FAILED`.
-- Navigation failure for one scan position: mark that position failed and
-  continue only if configured to do so; otherwise abort the bed scan.
-- No flower after retries: publish `missed` and continue.
+- Missing side start/end endpoints: `PRECONDITION_FAILED`.
+- Missing bed-side controller or perception stream: `PRECONDITION_FAILED`.
+- Navigation failure to the side start endpoint: abort the debug side scan.
+- Too few flowers after one side retry: publish `missed` and continue or abort
+  depending on the active workflow.
 - Cancel: cancel active Nav2 goal, stop the scan loop, and return arm to safe
   pose when possible.
 

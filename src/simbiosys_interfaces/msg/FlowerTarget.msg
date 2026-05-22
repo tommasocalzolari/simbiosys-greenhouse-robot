@@ -1,0 +1,10 @@
+std_msgs/Header header
+string flower_id
+string bed_id
+string side
+bool detected
+bool ready_for_harvest
+geometry_msgs/Point bbox_center_px
+float32 height_cm
+float32 confidence
+string message
