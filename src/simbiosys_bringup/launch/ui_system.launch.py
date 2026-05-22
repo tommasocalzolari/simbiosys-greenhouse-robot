@@ -5,7 +5,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    """Launch UI with dummy dashboard data for robot-free development."""
+    """Launch the SimBioSys operator UI."""
     image_topic = LaunchConfiguration("image_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     web_host = LaunchConfiguration("web_host")
@@ -46,12 +46,6 @@ def generate_launch_description():
                         "web_port": web_port,
                     }
                 ],
-            ),
-            Node(
-                package="simbiosys_ui",
-                executable="dummy_dashboard_data_node",
-                name="dummy_dashboard_data_node",
-                output="screen",
             ),
         ]
     )
