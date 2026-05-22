@@ -19,6 +19,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "bed_side_controller_node = simbiosys_behavior.bed_side_controller_node:main",
             "mission_manager_node = simbiosys_behavior.mission_manager_node:main",
         ],
     },

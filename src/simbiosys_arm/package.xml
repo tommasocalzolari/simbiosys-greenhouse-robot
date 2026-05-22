@@ -3,7 +3,7 @@
 <package format="3">
   <name>simbiosys_arm</name>
   <version>0.0.0</version>
-  <description>High-level arm, wrist camera, and gripper commands for SimBioSys.</description>
+  <description>Named arm poses and gripper commands for SimBioSys.</description>
   <maintainer email="group06@example.com">SimBioSys Group 06</maintainer>
   <license>Apache-2.0</license>
 
@@ -11,10 +11,6 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>control_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>moveit_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>shape_msgs</exec_depend>
   <exec_depend>simbiosys_interfaces</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>trajectory_msgs</exec_depend>

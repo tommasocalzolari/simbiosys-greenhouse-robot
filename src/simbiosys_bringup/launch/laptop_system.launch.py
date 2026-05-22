@@ -22,6 +22,7 @@ def generate_launch_description():
     gripper_max_position = LaunchConfiguration("gripper_max_position")
     gripper_max_effort = LaunchConfiguration("gripper_max_effort")
     motion_duration_sec = LaunchConfiguration("motion_duration_sec")
+    bed_side_enable_motion = LaunchConfiguration("bed_side_enable_motion")
 
     return LaunchDescription(
         [
@@ -29,6 +30,14 @@ def generate_launch_description():
                 "motion_duration_sec",
                 default_value="3.0",
                 description="Seconds used by the named arm pose wrapper to reach the target.",
+            ),
+            DeclareLaunchArgument(
+                "bed_side_enable_motion",
+                default_value="false",
+                description=(
+                    "Enable physical cmd_vel output from the bed-side controller. "
+                    "Keep false until perception alignment and robot safety are validated."
+                ),
             ),
             DeclareLaunchArgument(
                 "image_topic",
@@ -92,6 +101,18 @@ def generate_launch_description():
                 output="screen",
             ),
             Node(
+                package="simbiosys_behavior",
+                executable="bed_side_controller_node",
+                name="bed_side_controller_node",
+                output="screen",
+                parameters=[
+                    {
+                        "cmd_vel_topic": cmd_vel_topic,
+                        "enable_motion": bed_side_enable_motion,
+                    }
+                ],
+            ),
+            Node(
                 package="simbiosys_perception",
                 executable="flower_detection_node",
                 name="flower_detection_node",
@@ -120,12 +141,6 @@ def generate_launch_description():
                 package="simbiosys_base",
                 executable="path_execution_node",
                 name="path_execution_node",
-                output="screen",
-            ),
-            Node(
-                package="simbiosys_arm",
-                executable="joint_state_monitor_node",
-                name="joint_state_monitor_node",
                 output="screen",
             ),
             Node(

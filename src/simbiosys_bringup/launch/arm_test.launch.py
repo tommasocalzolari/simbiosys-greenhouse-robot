@@ -47,12 +47,6 @@ def generate_launch_description():
             ),
             Node(
                 package="simbiosys_arm",
-                executable="joint_state_monitor_node",
-                name="joint_state_monitor_node",
-                output="screen",
-            ),
-            Node(
-                package="simbiosys_arm",
                 executable="named_joint_pose_node",
                 name="named_joint_pose_node",
                 output="screen",
