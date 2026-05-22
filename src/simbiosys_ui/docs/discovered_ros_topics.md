@@ -1,6 +1,6 @@
 # Discovered ROS Topics
 
-Discovery date: 2026-05-17
+Discovery date: 2026-05-20
 
 ## Workspace Search
 
@@ -87,4 +87,6 @@ A manual forward command published to `/mirte_base_controller/cmd_vel_unstamped`
 - odom: `/mirte_base_controller/odom`
 - map: `/map` remains configured for future use
 
-No `/map` topic is available in the current simulation, so the UI defaults to the dummy greenhouse grid. Real `nav_msgs/msg/OccupancyGrid` map rendering is implemented and will activate when the configured map topic publishes.
+The mapping package now provides a real `/map` contract through `slam_toolbox`
+when mapping is running. If `/map` is unavailable at runtime, the UI shows a
+waiting state instead of drawing a replacement map.

@@ -34,7 +34,7 @@ sudo apt install ros-humble-rosbridge-server
 
 The UI is defensive when topics are missing:
 
-- Camera page shows a placeholder until frames arrive.
-- Dashboard uses dummy greenhouse beds when `/map` is unavailable.
-- Battery is shown from dummy data in dummy mode and hidden gracefully otherwise.
-- Plant-health and report data are computed locally until ROS messages arrive.
+- Camera page shows a waiting state until frames arrive.
+- Dashboard shows `Waiting for SLAM map topic` when `/map` is unavailable.
+- Battery is hidden gracefully when `/battery_state` is unavailable.
+- Plant-health and report panels show waiting states until real ROS messages arrive.

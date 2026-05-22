@@ -25,7 +25,6 @@ setup(
         "console_scripts": [
             "ui_node = simbiosys_ui.ui_node:main",
             "teleop_interface_node = simbiosys_ui.teleop_interface_node:main",
-            "dummy_dashboard_data_node = simbiosys_ui.dummy_dashboard_data_node:main",
         ],
     },
 )

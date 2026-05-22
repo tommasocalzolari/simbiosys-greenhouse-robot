@@ -1,16 +1,24 @@
 # Manual UI Tests
 
-1. Start MIRTE Gazebo simulation.
-
-2. Start rosbridge if required:
+1. Start the robot/simulation stack:
 
    ```bash
+   cd /home/mark/MDP
    source /opt/ros/humble/setup.bash
-   source /home/mark/MDP/install/setup.bash
-   ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+   source install/setup.bash
+   ros2 launch simbiosys_bringup simulation_mirte_master.launch.py
    ```
 
-3. Start the UI in dummy mode:
+2. Start mapping/SLAM when testing the live map:
+
+   ```bash
+   cd /home/mark/MDP
+   source /opt/ros/humble/setup.bash
+   source install/setup.bash
+   ros2 launch simbiosys_mapping getmap.launch.py simulation:=false odom_topic:=/mirte_base_controller/odom scan_topic:=/scan map_topic:=/map
+   ```
+
+3. Start the UI:
 
    ```bash
    cd /home/mark/MDP
@@ -21,90 +29,146 @@
 
 4. Open `http://localhost:8080`.
 
-5. For local network testing, run this on the laptop and copy the first LAN IP:
+5. Verify the global safety button is red and labeled `STOP`.
+
+6. In another terminal, monitor teleop:
 
    ```bash
-   hostname -I
-   ```
-
-6. On a phone/tablet/laptop on the same Wi-Fi/network, open:
-
-   ```text
-   http://<LAPTOP_LAN_IP>:8080
-   ```
-
-   Do not use port forwarding or expose the UI to the public internet.
-
-7. Verify the dashboard shows a visible **Digital Twin Map** / **2D Greenhouse Map** panel.
-
-8. Verify Bed A, Bed B, and Bed C are visible as map areas.
-
-9. Verify flower markers exist for `A1`-`A20`, `B1`-`B18`, and `C1`-`C22`.
-
-10. Click flower `A1` and verify the detail panel shows flower-specific height, color, health, growth stage, bug status, harvest readiness, confidence, last scan, and notes.
-
-11. Verify the bed cards show summary data only: total flowers, average height, healthy count, warning/critical count, and ready-for-harvest count.
-
-12. Verify the concise report is computed from flower-level data and shows 3 beds and 60 flowers.
-
-13. Click **Teleop / Camera**.
-
-14. Run this in another terminal and verify Twist commands appear:
-
-   ```bash
-   source /opt/ros/humble/setup.bash
-   source /home/mark/MDP/install/setup.bash
    ros2 topic echo /mirte_base_controller/cmd_vel_unstamped
    ```
 
-15. Confirm the camera feed appears or the camera placeholder says it is waiting for `/camera/image_raw/compressed`.
+7. Press `STOP`; verify a zero Twist is sent and movement/navigation controls
+   are disabled.
 
-16. Press `W` from a laptop browser and verify the robot moves forward.
+8. Press green `START`; verify UI safety is enabled but robot movement controls
+   remain disabled until Take Control is pressed.
 
-17. Release `W` and verify the robot stops.
+9. On Dashboard, verify bed cards show only CO2, humidity, and bugs detected.
+   Missing telemetry must show unavailable.
 
-18. Press `A` from a laptop browser and verify the robot strafes/moves left if supported by the simulation.
+10. Verify last scan is displayed as an age such as `2 min ago` or
+    `not available`.
 
-19. Press `D` from a laptop browser and verify the robot strafes/moves right if supported by the simulation.
+11. Verify no average height, confidence, flower health, or flower bed field is
+    shown.
 
-20. Press `W + A` from a laptop browser and verify combined forward-left movement.
+12. If `/map` exists, click a real map position and verify the selected target
+    marker appears.
 
-21. Press `W + S` from a laptop browser and verify they cancel in the forward/backward direction.
+13. Press `Navigate`; if `simbiosys/execute_behavior` is available, verify a
+    real `NAVIGATE` action goal is sent. Otherwise verify `Navigation backend
+    unavailable`.
 
-22. Press `Q` from a laptop browser and verify counter-clockwise rotation.
+14. Change Dashboard task mode to harvest/scanning if
+    `simbiosys/set_robot_mode` is available. Otherwise verify the selector is
+    disabled.
 
-23. Press `E` from a laptop browser and verify clockwise rotation.
+15. Open Teleop / Camera.
 
-24. Press `Q + E` from a laptop browser and verify rotation cancels.
+16. Verify the camera view is smaller and the live mapping panel is visible.
 
-25. Press and hold the on-screen Forward, Back, Strafe Left, Strafe Right, Rotate Left, and Rotate Right buttons from the phone/tablet and verify they publish the same combined commands as the keyboard controls.
+17. If real map and pose are available, verify the Teleop SLAM map shows the
+    robot marker.
 
-26. Release on-screen teleop buttons and verify zero Twist is sent when no movement remains.
+18. Verify the Dashboard map does not show robot location.
 
-27. Press `Space` or `Escape` and verify zero Twist is sent.
+19. Before pressing Take Control, verify movement buttons are greyed out and
+    W/S/A/D/Q/E do not publish movement Twist.
 
-28. Navigate back to the dashboard and verify zero Twist is sent.
+20. Press `Take Control`; verify zero Twist is sent, movement controls become
+    enabled, keyboard teleop is enabled, and the button changes to
+    `Release Control`.
 
-29. Confirm no STOP button is visible, but stop behavior still works on release/page leave.
+21. Press `Release Control`; verify zero Twist is sent, movement controls are
+    disabled, keyboard teleop is disabled, and the button changes back to
+    `Take Control`.
 
-30. Verify keyboard teleop does not trigger while focus is in the speed selector.
+22. Press `STOP` while Take Control is active; verify zero Twist is sent, Take
+    Control becomes inactive, and START does not automatically re-enable
+    movement.
 
-31. Verify the camera panel shows a clear placeholder when no camera frames are available.
+23. Press START, then Take Control, then test W/S/A/D/Q/E. Confirm opposite keys
+    cancel and combinations combine.
 
-32. Publish a flower-level plant-health update and verify flower `A1` updates:
+24. Verify speeds: slow `0.50 m/s`, normal `0.75 m/s`, fast `1.00 m/s`.
+
+25. Verify turning strengths: slow `0.8 rad/s`, normal `1.4 rad/s`, fast
+    `2.0 rad/s`.
+
+26. Switch to Arm Operations.
+
+27. Verify movement controls are replaced by real named arm pose buttons when
+    `simbiosys/send_named_arm_pose` is available; otherwise verify unavailable.
+
+28. Press `Return to Robot Operations` and verify W/S/A/D/Q/E teleop works
+    again.
+
+29. Use the camera selector. Verify base/front camera uses real base topics and
+    arm camera is disabled/unavailable unless a real arm camera topic exists.
+
+30. Verify mapping workflow buttons remain stable: unavailable backend controls
+    are disabled and no artifact candidates are created by the UI.
+
+31. If `/mapping/artifact_candidates` is being published, verify it is
+    `std_msgs/msg/String` JSON:
 
    ```bash
-   ros2 topic pub --once /plant_health std_msgs/msg/String "{data: '{\"flower_id\":\"A1\",\"bed_id\":\"A\",\"height_cm\":31.4,\"color\":\"purple\",\"health\":\"healthy\",\"growth_stage\":\"growing\",\"bug_detected\":false,\"flower_detected\":true,\"ready_for_harvest\":false,\"confidence\":0.91,\"last_scan_time\":\"2026-05-15T12:00:00\",\"notes\":\"Normal growth\"}'}"
+   ros2 topic echo /mapping/artifact_candidates --once --field data
    ```
 
-33. Publish a legacy bed-level message and verify the UI does not crash:
+32. Verify the Mapping Workflow panel shows artifact candidate count greater
+    than zero after real candidate JSON is received.
+
+33. Verify the candidate list shows received IDs such as `walls`, `bed_A`,
+    `bed_B`, `bed_C`, `obstacle_1`, or `false_scan_1` when those are present in
+    the topic payload.
+
+34. Select each candidate from the list and verify the selected candidate ID,
+    class hint, geometry type, and classification details update.
+
+35. Verify renderable candidates are drawn over the real map. If a candidate has
+    unknown geometry, verify it stays visible in the list and a warning is
+    shown instead of crashing the UI.
+
+36. Classify selected candidates as `wall`, `bed`, `obstacle`, and
+    `false_scan`. Verify bed previews use rectangles, and classified
+    `false_scan` candidates remain in the list but are hidden from the map
+    preview.
+
+37. Press `Done Mapping` after map and candidates are received. Verify the UI
+    freezes the latest real map and latest real candidates from
+    `/mapping/artifact_candidates`. If no candidates were received, verify the
+    UI shows `No artifact candidates received`.
+
+38. When using the standalone test publisher, verify the mapping workflow
+    services exist:
 
    ```bash
-   ros2 topic pub --once /plant_health std_msgs/msg/String "{data: '{\"bed_id\":\"A\",\"health\":\"warning\",\"growth_stage\":\"ready\",\"confidence\":0.82,\"last_scan_time\":\"2026-05-15T12:05:00\",\"notes\":\"Legacy bed-level update\"}'}"
+   ros2 service list -t | grep -E "mapping|map|safe|start|done|save"
+   ros2 service call /mapping/start std_srvs/srv/Trigger {}
+   ros2 service call /mapping/done std_srvs/srv/Trigger {}
+   ros2 service call /mapping/save_safe_map std_srvs/srv/Trigger {}
    ```
 
-34. Stop rosbridge or leave it unavailable and verify the UI does not crash.
+39. Verify the Mapping Workflow panel reports why a disabled button is disabled,
+    for example `Start mapping service unavailable`, `No map received yet`, `No
+    artifact candidates received`, or `Save safe map backend unavailable`.
 
-35. Confirm the dummy greenhouse map remains visible because the current simulation does not publish `/map`.
+40. Verify runtime diagnostics show map topic state, last map timestamp,
+    artifact candidate count, Start Mapping backend state, Save Safe Map backend
+    state, selected candidate ID, and review mode state.
 
-36. If a simulation publishes `/map`, set `dummyMode` to `false` and verify the occupancy-grid canvas can replace the dummy greenhouse map.
+41. Verify no dummy/mock/generated values are displayed anywhere from
+    `src/simbiosys_ui`.
+
+## Topic And Service Checks
+
+```bash
+ros2 topic list -t | grep -E "mapping|artifact|candidate|map|bed|environment"
+ros2 service list -t | grep -E "mapping|map|safe|start|done|save"
+ros2 topic echo /mapping/artifact_candidates --once --field data
+ros2 topic echo /map --once
+ros2 service call /mapping/start std_srvs/srv/Trigger {}
+ros2 service call /mapping/done std_srvs/srv/Trigger {}
+ros2 service call /mapping/save_safe_map std_srvs/srv/Trigger {}
+```

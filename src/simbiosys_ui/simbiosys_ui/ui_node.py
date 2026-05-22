@@ -14,17 +14,26 @@ from urllib.parse import urlparse, urlunparse
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState, CompressedImage, Image
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
 try:
-    from simbiosys_interfaces.msg import BedObservation, FlowerData, PlantHealth
+    from simbiosys_interfaces.action import ExecuteBehavior
+    from simbiosys_interfaces.msg import BedObservation, BehaviorType, MappingStatus, PlantHealth, TaskStatus
+    from simbiosys_interfaces.srv import SendNamedArmPose, SetRobotMode
 except ImportError:
+    ExecuteBehavior = None
     BedObservation = None
-    FlowerData = None
+    BehaviorType = None
+    MappingStatus = None
     PlantHealth = None
+    TaskStatus = None
+    SendNamedArmPose = None
+    SetRobotMode = None
 
 try:
     import cv2
@@ -39,32 +48,45 @@ DEFAULT_WEB_HOST = "0.0.0.0"
 DEFAULT_WEB_PORT = 8080
 DEFAULT_CONFIG = {
     "rosbridgeUrl": "ws://localhost:9090",
-    "dummyMode": True,
     "topics": {
         "cmdVel": "/mirte_base_controller/cmd_vel_unstamped",
-        "cameraCompressed": "/camera/image_raw/compressed",
-        "cameraRaw": "/camera/image_raw",
-        "map": "/map",
+        "baseCameraCompressed": "/camera/image_raw/compressed",
+        "baseCameraRaw": "/camera/image_raw",
+        "armCameraCompressed": None,
+        "armCameraRaw": "/gripper_camera/image_raw",
+        "liveMap": "/map",
+        "mapUpdatePeriodSec": 20,
+        "mappingStatus": "simbiosys/mapping_status",
+        "taskStatus": "simbiosys/task_status",
+        "setTaskMode": "simbiosys/set_robot_mode",
+        "executeBehavior": "simbiosys/execute_behavior",
+        "sendNamedArmPose": "simbiosys/send_named_arm_pose",
+        "startMapping": "/mapping/start",
+        "doneMapping": "/mapping/done",
+        "artifactCandidates": "/mapping/artifact_candidates",
+        "classifyArtifact": None,
+        "saveSafeMap": "/mapping/save_safe_map",
+        "safeMapOutput": None,
+        "takeControl": None,
         "odom": "/mirte_base_controller/odom",
         "amclPose": "/amcl_pose",
         "plantHealth": "/plant_health",
         "plantHealthReport": "/plant_health_report",
+        "typedPlantHealth": "simbiosys/plant_health",
         "bedObservation": "simbiosys/bed_observation",
-        "flowerDetections": "/flower_detections",
-        "inspectBedCommand": "/ui/inspect_bed",
         "battery": "/battery_state",
     },
 }
 
-FLOWER_COUNTS = {"A": 20, "B": 18, "C": 22}
-BED_IDS = tuple(FLOWER_COUNTS.keys())
 SPEED_MODES = {
-    "slow": {"linear": 0.15, "angular": 0.4},
-    "normal": {"linear": 0.30, "angular": 0.7},
-    "fast": {"linear": 0.50, "angular": 1.0},
+    "slow": {"linear": 0.50, "angular": 0.8},
+    "normal": {"linear": 0.75, "angular": 1.4},
+    "fast": {"linear": 1.00, "angular": 2.0},
 }
 MAX_LINEAR_SPEED = 1.0
-MAX_ANGULAR_SPEED = 1.5
+MAX_ANGULAR_SPEED = 2.0
+ARM_POSES = ("home", "camera_forward", "camera_down", "inspect", "stow")
+TASK_MODE_TO_BACKEND = {"harvest": "HARVESTING", "scanning": "SCANNING"}
 
 
 INDEX_HTML = """<!doctype html>
@@ -72,7 +94,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SimBioSys Greenhouse UI</title>
+  <title>SimBioSys UI</title>
   <style>
     :root {
       color-scheme: dark;
@@ -86,9 +108,7 @@ INDEX_HTML = """<!doctype html>
       --yellow: #e1b94b;
       --red: #e2685d;
       --blue: #66a8d9;
-      --soil: #6c5844;
     }
-
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -97,27 +117,24 @@ INDEX_HTML = """<!doctype html>
       color: var(--text);
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-
     main {
-      width: min(1220px, 100%);
+      width: min(1280px, 100%);
       margin: 0 auto;
       padding: 18px;
       display: grid;
       gap: 14px;
     }
-
-    header {
+    header, .topline, .control-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 10px;
+      flex-wrap: wrap;
     }
-
-    h1 { margin: 0; font-size: 1.32rem; letter-spacing: 0; }
-    h2 { margin: 0 0 10px; font-size: 1.02rem; letter-spacing: 0; }
-    h3 { margin: 0 0 8px; font-size: 0.96rem; letter-spacing: 0; }
+    h1 { margin: 0; font-size: 1.3rem; letter-spacing: 0; }
+    h2 { margin: 0; font-size: 1.02rem; letter-spacing: 0; }
+    h3 { margin: 0; font-size: 0.95rem; letter-spacing: 0; }
     p { margin: 0; color: var(--muted); }
-
     button, select {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -125,7 +142,6 @@ INDEX_HTML = """<!doctype html>
       color: var(--text);
       font: inherit;
     }
-
     button {
       min-height: 42px;
       padding: 0 14px;
@@ -133,15 +149,24 @@ INDEX_HTML = """<!doctype html>
       cursor: pointer;
       touch-action: manipulation;
     }
-
-    button:active, button.active {
+    button:disabled, select:disabled {
+      cursor: not-allowed;
+      color: #78847e;
+      background: #141a18;
+    }
+    button:active:not(:disabled), button.active {
       background: var(--green);
       border-color: var(--green);
       color: #07110b;
     }
-
     select { min-height: 38px; padding: 0 10px; }
-
+    canvas {
+      width: 100%;
+      height: 100%;
+      min-height: 300px;
+      display: block;
+      background: #0a0d0c;
+    }
     .page { display: none; }
     .page.active { display: grid; gap: 14px; }
     .panel {
@@ -150,8 +175,7 @@ INDEX_HTML = """<!doctype html>
       background: var(--panel);
       overflow: hidden;
     }
-    .panel-body { padding: 14px; }
-    .topline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .panel-body { padding: 14px; display: grid; gap: 12px; }
     .status-pill {
       border: 1px solid var(--line);
       border-radius: 999px;
@@ -161,158 +185,54 @@ INDEX_HTML = """<!doctype html>
       font-size: 0.9rem;
       white-space: nowrap;
     }
-
+    .safety {
+      min-width: 112px;
+      border-color: #ffaaa3;
+      background: var(--red);
+      color: #210504;
+    }
+    .safety.paused {
+      border-color: #a7efb7;
+      background: var(--green);
+      color: #07110b;
+    }
     .dashboard-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
       gap: 14px;
     }
-
-    .map-wrap { position: relative; min-height: 470px; }
-    .dummy-map {
-      min-height: 470px;
-      position: relative;
-      display: grid;
-      gap: 14px;
-      padding: 14px;
-      background:
-        linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
-        linear-gradient(0deg, rgba(255,255,255,0.035) 1px, transparent 1px),
-        #0b100e;
-      background-size: 34px 34px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    .map-title {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      color: var(--muted);
-      font-weight: 700;
-    }
-    .bed-zone {
-      position: relative;
-      min-height: 118px;
-      padding: 12px;
-      border: 1px solid #4b654f;
-      border-radius: 8px;
-      background: rgba(35, 53, 46, 0.86);
-    }
-    .bed-zone-label {
-      position: absolute;
-      left: 12px;
-      top: 10px;
-      font-weight: 800;
-      color: var(--text);
-      z-index: 2;
-    }
-    .flower-grid {
-      margin-top: 28px;
-      display: grid;
-      grid-template-columns: repeat(11, minmax(24px, 1fr));
-      gap: 7px;
-    }
-    .flower-marker {
-      min-width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      display: grid;
-      place-items: center;
-      background: #4fac67;
-      color: #07110b;
-      font-weight: 800;
-      font-size: 0.72rem;
-      border: 2px solid rgba(255,255,255,0.55);
-      padding: 0;
-    }
-    .flower-marker[data-health="warning"] { background: var(--yellow); color: #211800; }
-    .flower-marker[data-health="critical"] { background: var(--red); color: #210504; }
-    .flower-marker[data-health="unknown"] { background: #718079; color: #07110b; }
-    .flower-marker.selected {
-      outline: 3px solid var(--blue);
-      outline-offset: 2px;
-      background: #f1cf5b;
-    }
-    .robot-marker {
-      position: absolute;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--blue);
-      border: 3px solid #d8efff;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      box-shadow: 0 0 0 5px rgba(102, 168, 217, 0.18);
-      z-index: 3;
-    }
-
-    canvas {
-      width: 100%;
-      min-height: 470px;
-      display: block;
-      background: #0a0d0c;
-    }
-
-    .report-grid {
+    .metric-grid, .bed-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
     }
-    .metric {
+    .metric, .bed-card {
       border-top: 1px solid var(--line);
       padding-top: 10px;
       color: var(--muted);
     }
-    .metric strong {
+    .metric strong, .bed-card strong {
       display: block;
       color: var(--text);
-      font-size: 1.25rem;
-    }
-    .flower-detail {
-      display: grid;
-      gap: 8px;
-      color: var(--muted);
-    }
-    .flower-detail strong { color: var(--text); }
-    .bed-summaries {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      font-size: 1.1rem;
     }
     .bed-card {
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 12px;
-      background: var(--panel);
+      background: #17201d;
       display: grid;
       gap: 8px;
-      color: var(--muted);
     }
-    .bed-card strong { color: var(--text); }
-    .flower-list {
-      max-height: 210px;
-      overflow: auto;
+    .bed-card.available { border-color: #4d7258; }
+    .bed-card.unavailable { border-color: #59615d; }
+    .teleop-main {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
-      margin-top: 10px;
-    }
-    .flower-list button {
-      min-height: 32px;
-      padding: 0 8px;
-      font-size: 0.85rem;
-    }
-
-    .teleop-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.75fr);
+      grid-template-columns: minmax(280px, 0.9fr) minmax(340px, 1.1fr);
       gap: 14px;
     }
     .camera {
-      min-height: 470px;
+      min-height: 320px;
       display: grid;
       place-items: center;
       background: #040605;
@@ -320,35 +240,54 @@ INDEX_HTML = """<!doctype html>
     .camera img {
       width: 100%;
       height: 100%;
-      max-height: calc(100vh - 170px);
+      max-height: 46vh;
       object-fit: contain;
       display: block;
     }
-    .camera-placeholder { padding: 22px; text-align: center; color: var(--muted); }
-    .pad {
+    .placeholder {
+      min-height: 140px;
       display: grid;
-      grid-template-columns: repeat(3, minmax(70px, 1fr));
-      grid-template-rows: repeat(3, 74px);
-      gap: 10px;
-    }
-    .empty { visibility: hidden; }
-    .control-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: center;
-      border-top: 1px solid var(--line);
-      padding-top: 10px;
+      place-items: center;
+      padding: 20px;
+      text-align: center;
       color: var(--muted);
     }
-
-    @media (max-width: 860px) {
+    .map-panel {
+      min-height: 330px;
+      position: relative;
+    }
+    .workflow-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.8fr) minmax(320px, 1fr);
+      gap: 14px;
+    }
+    .pad, .arm-pose-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(70px, 1fr));
+      gap: 10px;
+    }
+    .pad { grid-template-rows: repeat(3, 74px); }
+    .empty { visibility: hidden; }
+    .candidate-list {
+      display: grid;
+      gap: 8px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .candidate-list button { min-height: 46px; text-align: left; }
+    .candidate-list small { display: block; color: var(--muted); margin-top: 4px; }
+    .class-controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .warning { color: #e1b94b; }
+    @media (max-width: 900px) {
       main { padding: 12px; }
       header { align-items: flex-start; flex-direction: column; }
-      .dashboard-grid, .teleop-grid { grid-template-columns: 1fr; }
-      .bed-summaries { grid-template-columns: 1fr; }
-      .flower-grid { grid-template-columns: repeat(6, minmax(24px, 1fr)); }
-      .camera { min-height: 300px; }
+      .dashboard-grid, .teleop-main, .workflow-grid { grid-template-columns: 1fr; }
+      .camera, .map-panel { min-height: 280px; }
+      .metric-grid, .bed-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -360,6 +299,7 @@ INDEX_HTML = """<!doctype html>
         <p>MIRTE Master dashboard</p>
       </div>
       <div class="topline">
+        <button id="safety-toggle" class="safety">STOP</button>
         <span class="status-pill" id="connection">Starting</span>
         <span class="status-pill" id="battery">Battery --</span>
         <button id="to-teleop">Teleop / Camera</button>
@@ -371,70 +311,157 @@ INDEX_HTML = """<!doctype html>
       <div class="dashboard-grid">
         <section class="panel">
           <div class="panel-body">
-            <h2>Digital Twin Map</h2>
-            <div id="map-panel" class="map-wrap">
-              <div id="greenhouse-map" class="dummy-map"></div>
-              <canvas id="map-canvas" width="900" height="520" style="display:none"></canvas>
+            <div class="topline">
+              <h2>Map Position</h2>
+              <span id="dashboard-map-time" class="status-pill">Last SLAM map: not received yet</span>
             </div>
+            <div id="dashboard-map-placeholder" class="placeholder">Waiting for SLAM map</div>
+            <canvas id="dashboard-map-canvas" width="900" height="520" style="display:none"></canvas>
+            <div class="control-row"><span id="selected-target">No map position selected</span><button id="navigate-target" disabled>Navigate</button></div>
+            <p id="navigation-message">Navigation backend unavailable</p>
           </div>
         </section>
         <aside class="panel">
           <div class="panel-body">
-            <h2>Plant Health Report</h2>
-            <div class="report-grid">
-              <div class="metric"><strong id="bed-count">0</strong>total beds</div>
-              <div class="metric"><strong id="flower-count">0</strong>total flowers</div>
-              <div class="metric"><strong id="healthy-count">0</strong>healthy flowers</div>
-              <div class="metric"><strong id="risk-count">0</strong>warning / critical</div>
-              <div class="metric"><strong id="ready-count">0</strong>ready for harvest</div>
-              <div class="metric"><strong id="average-height">0 cm</strong>average height</div>
+            <h2>Task Mode</h2>
+            <div class="control-row">
+              <span>Current task</span>
+              <select id="task-mode" disabled>
+                <option value="">Unavailable</option>
+                <option value="harvest">Harvest</option>
+                <option value="scanning">Scanning</option>
+              </select>
             </div>
-            <div class="metric"><strong id="last-scan">unknown</strong>last scan</div>
-            <div class="metric"><strong id="next-action">waiting</strong>recommended action</div>
+            <p id="task-message">Task mode backend unavailable</p>
+            <h2>Scan Summary</h2>
+            <div class="metric-grid">
+              <div class="metric"><strong id="bed-count">0</strong>real beds observed</div>
+              <div class="metric"><strong id="flower-count">0</strong>real flower records</div>
+              <div class="metric"><strong id="last-scan">not available</strong>last scan</div>
+              <div class="metric"><strong id="next-action">Waiting for real data</strong>status</div>
+            </div>
           </div>
         </aside>
       </div>
       <section class="panel">
-        <div class="panel-body flower-detail" id="flower-detail">
-          <h2>Selected Flower</h2>
-          <p>Click a flower marker on the map to inspect flower-specific data.</p>
+        <div class="panel-body">
+          <h2>Bed Overview</h2>
+          <div class="bed-grid" id="bed-overview"></div>
         </div>
       </section>
-      <section class="bed-summaries" id="bed-summaries"></section>
+      <section class="panel">
+        <div class="panel-body" id="plant-records">
+          <h2>Plant Records</h2>
+          <p>No plant records received</p>
+        </div>
+      </section>
     </section>
 
     <section id="teleop-page" class="page">
-      <div class="teleop-grid">
-        <section class="panel camera" aria-label="Live camera feed">
-          <img id="camera-feed" src="/stream.mjpg" alt="Live camera feed">
-          <div id="camera-placeholder" class="camera-placeholder" style="display:none">Waiting for camera frames from /camera/image_raw/compressed</div>
+      <div class="teleop-main">
+        <section class="panel">
+          <div class="panel-body">
+            <div class="topline">
+              <h2>Camera</h2>
+              <select id="camera-select">
+                <option value="base">Base/front camera</option>
+                <option value="arm">Arm camera</option>
+              </select>
+              <span class="status-pill" id="camera-state">waiting</span>
+            </div>
+            <div class="camera">
+              <img id="camera-feed" src="/stream.mjpg" alt="Live camera feed">
+              <div id="camera-placeholder" class="placeholder" style="display:none">Waiting for camera frames</div>
+            </div>
+          </div>
         </section>
         <section class="panel">
-          <div class="panel-body" style="display:grid; gap:14px">
-            <h2>Teleoperation</h2>
+          <div class="panel-body">
+            <div class="topline">
+              <h2>Live Mapping</h2>
+              <span class="status-pill" id="map-state">Waiting for SLAM map</span>
+            </div>
+            <div class="map-panel">
+              <div id="teleop-map-placeholder" class="placeholder">Waiting for SLAM map</div>
+              <canvas id="teleop-map-canvas" width="900" height="520" style="display:none"></canvas>
+            </div>
+            <div class="control-row"><span id="map-meta">Last SLAM map: not received yet</span><strong id="pose-state">robot pose unavailable</strong></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="workflow-grid">
+        <section class="panel">
+          <div class="panel-body">
+            <div class="topline">
+              <h2>Operations</h2>
+              <button id="take-control">Take Control</button>
+            </div>
+            <p id="take-control-message">Manual-control backend unavailable</p>
             <div class="control-row">
-              <span>Speed</span>
-              <select id="speed-mode">
-                <option value="slow">Slow 0.15 m/s</option>
-                <option value="normal" selected>Normal 0.30 m/s</option>
-                <option value="fast">Fast 0.50 m/s</option>
+              <span>Mode</span>
+              <select id="operation-mode">
+                <option value="robot">Robot Operations</option>
+                <option value="arm">Arm Operations</option>
               </select>
             </div>
-            <div class="pad">
-              <button data-control="rotate-left">Rotate Left</button>
-              <span class="empty"></span>
-              <button data-control="rotate-right">Rotate Right</button>
-              <button data-control="strafe-left">Strafe Left</button>
-              <button data-control="forward">Forward</button>
-              <button data-control="strafe-right">Strafe Right</button>
-              <span class="empty"></span>
-              <button data-control="backward">Back</button>
-              <span class="empty"></span>
+            <div id="robot-controls">
+              <div class="control-row">
+                <span>Speed</span>
+                <select id="speed-mode">
+                  <option value="slow">Slow 0.50 m/s</option>
+                  <option value="normal" selected>Normal 0.75 m/s</option>
+                  <option value="fast">Fast 1.00 m/s</option>
+                </select>
+              </div>
+              <div class="pad">
+                <button data-control="rotate-left" disabled>Rotate Left</button>
+                <span class="empty"></span>
+                <button data-control="rotate-right" disabled>Rotate Right</button>
+                <button data-control="strafe-left" disabled>Strafe Left</button>
+                <button data-control="forward" disabled>Forward</button>
+                <button data-control="strafe-right" disabled>Strafe Right</button>
+                <span class="empty"></span>
+                <button data-control="backward" disabled>Back</button>
+                <span class="empty"></span>
+              </div>
+              <div class="control-row"><span>Command</span><strong id="teleop-state">take control required</strong></div>
+              <div class="control-row"><span>Keyboard</span><strong>Press Take Control first</strong></div>
             </div>
-            <div class="control-row"><span>Command</span><strong id="teleop-state">idle</strong></div>
-            <div class="control-row"><span>Twist topic</span><strong id="cmd-topic">/mirte_base_controller/cmd_vel_unstamped</strong></div>
-            <div class="control-row"><span>Camera</span><strong id="camera-state">waiting</strong></div>
-            <div class="control-row"><span>Keyboard</span><strong>W/S A/D Q/E</strong></div>
+            <div id="arm-controls" style="display:none">
+              <p id="arm-message">Arm pose backend unavailable</p>
+              <div class="arm-pose-grid" id="arm-pose-buttons"></div>
+              <button id="robot-ops-return">Return to Robot Operations</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-body">
+            <h2>Mapping Workflow</h2>
+            <div class="topline">
+              <button id="start-mapping" disabled>Start Mapping</button>
+              <button id="done-mapping" disabled>Done Mapping</button>
+              <button id="retry-mapping" disabled>Retry</button>
+              <button id="save-safe-map" disabled>Save Safe Map</button>
+            </div>
+            <p id="workflow-message">Mapping workflow unavailable</p>
+            <div class="control-row"><span>Artifact candidates</span><strong id="candidate-state">No artifact candidates received</strong></div>
+            <div class="control-row"><span>Map</span><strong id="mapping-map-time">Last SLAM map: not received yet</strong></div>
+            <p id="candidate-parse-error" class="warning" style="display:none"></p>
+            <div class="candidate-list" id="candidate-list"></div>
+            <div id="candidate-detail" class="panel-body" style="padding:0">
+              <h3>Artifact</h3>
+              <p>No artifact candidates received</p>
+            </div>
+            <div class="class-controls">
+              <button data-classification="wall" disabled>Wall</button>
+              <button data-classification="bed" disabled>Bed</button>
+              <button data-classification="obstacle" disabled>Obstacle</button>
+              <button data-classification="false_scan" disabled>False Scan</button>
+            </div>
+            <p id="save-safe-map-warning" class="warning" style="display:none"></p>
+            <div id="safe-map-result" class="panel-body" style="padding:0;display:none"></div>
           </div>
         </section>
       </div>
@@ -443,11 +470,28 @@ INDEX_HTML = """<!doctype html>
 
   <script>
     const state = {
-      selectedFlower: null,
       page: "dashboard",
+      operationMode: "robot",
       activeControls: new Set(),
       activeSources: new Map(),
-      pressedKeys: new Set()
+      pressedKeys: new Set(),
+      latestMap: null,
+      frozenMap: null,
+      reviewMode: false,
+      candidates: [],
+      frozenCandidates: null,
+      selectedCandidateId: null,
+      classifications: {},
+      safeMapResult: null,
+      artifactCandidatesReceivedAt: null,
+      artifactCandidatesParseError: "",
+      lastMapRenderMs: 0,
+      lastMapStamp: null,
+      lastCandidateStamp: null,
+      selectedMapTarget: null,
+      manualControlActive: false,
+      safetyPaused: false,
+      topics: {}
     };
     const pages = {
       dashboard: document.getElementById("dashboard-page"),
@@ -460,24 +504,22 @@ INDEX_HTML = """<!doctype html>
       pages.teleop.classList.toggle("active", page === "teleop");
       document.getElementById("to-teleop").style.display = page === "dashboard" ? "" : "none";
       document.getElementById("to-dashboard").style.display = page === "teleop" ? "" : "none";
-      if (page === "dashboard") {
-        stopTeleop();
-      }
+      if (page === "dashboard") stopTeleop();
     }
-
     document.getElementById("to-teleop").addEventListener("click", () => showPage("teleop"));
     document.getElementById("to-dashboard").addEventListener("click", () => showPage("dashboard"));
 
     function describeActiveControls() {
+      if (state.safetyPaused) return "paused";
+      if (!state.manualControlActive) return "take control required";
       if (!state.activeControls.size) return "idle";
       return Array.from(state.activeControls).sort().join(" + ");
     }
     function refreshActiveControls() {
       state.activeControls = new Set(state.activeSources.values());
     }
-
     async function sendTeleop() {
-      const controls = Array.from(state.activeControls);
+      const controls = state.safetyPaused || !state.manualControlActive || state.operationMode !== "robot" ? [] : Array.from(state.activeControls);
       document.getElementById("teleop-state").textContent = describeActiveControls();
       try {
         await fetch("/api/teleop", {
@@ -495,9 +537,6 @@ INDEX_HTML = """<!doctype html>
       if (repeatTimer) clearInterval(repeatTimer);
       repeatTimer = null;
     }
-    function setButtonActive(button, active) {
-      button.classList.toggle("active", active);
-    }
     function ensureRepeat() {
       if (!repeatTimer) repeatTimer = setInterval(sendTeleop, 250);
     }
@@ -506,29 +545,27 @@ INDEX_HTML = """<!doctype html>
       state.activeSources.clear();
       refreshActiveControls();
       state.pressedKeys.clear();
-      document.querySelectorAll("button[data-control]").forEach((button) => {
-        setButtonActive(button, false);
-      });
+      document.querySelectorAll("button[data-control]").forEach((button) => button.classList.remove("active"));
       sendTeleop();
     }
     function startControl(event) {
       event.preventDefault();
-      const button = event.currentTarget;
-      const control = button.dataset.control;
+      if (state.safetyPaused || !state.manualControlActive || state.operationMode !== "robot") return;
+      const control = event.currentTarget.dataset.control;
       state.activeSources.set(`button:${control}`, control);
       refreshActiveControls();
-      setButtonActive(button, true);
+      event.currentTarget.classList.add("active");
       sendTeleop();
       ensureRepeat();
     }
     function stopControl(event) {
       if (event) event.preventDefault();
-      const button = event ? event.currentTarget : null;
-      if (button) {
-        state.activeSources.delete(`button:${button.dataset.control}`);
-        refreshActiveControls();
-        setButtonActive(button, false);
+      if (event && event.currentTarget) {
+        const control = event.currentTarget.dataset.control;
+        state.activeSources.delete(`button:${control}`);
+        event.currentTarget.classList.remove("active");
       }
+      refreshActiveControls();
       if (!state.activeControls.size) clearRepeat();
       sendTeleop();
     }
@@ -558,7 +595,6 @@ INDEX_HTML = """<!doctype html>
         target.isContentEditable
       );
     }
-
     const keyCommands = {
       KeyW: "forward",
       KeyS: "backward",
@@ -568,9 +604,8 @@ INDEX_HTML = """<!doctype html>
       KeyE: "rotate-right",
     };
     const stopKeys = new Set(["Space", "Escape"]);
-
     document.addEventListener("keydown", (event) => {
-      if (state.page !== "teleop" || isTypingTarget(event.target)) return;
+      if (state.page !== "teleop" || state.operationMode !== "robot" || state.safetyPaused || !state.manualControlActive || isTypingTarget(event.target)) return;
       if (stopKeys.has(event.code)) {
         event.preventDefault();
         stopTeleop();
@@ -586,14 +621,8 @@ INDEX_HTML = """<!doctype html>
       sendTeleop();
       ensureRepeat();
     });
-
     document.addEventListener("keyup", (event) => {
       if (state.page !== "teleop") return;
-      if (isTypingTarget(event.target) && !state.pressedKeys.has(event.code)) return;
-      if (stopKeys.has(event.code)) {
-        event.preventDefault();
-        return;
-      }
       const command = keyCommands[event.code];
       if (!command) return;
       event.preventDefault();
@@ -604,173 +633,617 @@ INDEX_HTML = """<!doctype html>
       sendTeleop();
     });
 
-    async function inspectFlower(flowerId) {
-      await fetch("/api/inspect_bed", {
+    async function postJson(url, payload = {}) {
+      const response = await fetch(url, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({bedId: flowerId.slice(0, 1)})
+        body: JSON.stringify(payload)
       });
-      const confirmation = document.getElementById("inspect-confirmation");
-      if (confirmation) confirmation.textContent = `Inspect command sent for ${flowerId}`;
+      return response.json();
     }
 
-    function selectFlower(flower, data) {
-      state.selectedFlower = flower.flower_id;
-      renderFlowerDetail(flower, data);
-      renderDummyMap(data);
-      renderFlowerList(data);
+    document.getElementById("safety-toggle").addEventListener("click", async () => {
+      const data = await postJson("/api/safety/toggle");
+      state.safetyPaused = data.paused;
+      state.manualControlActive = data.manualControlActive;
+      if (state.safetyPaused || !state.manualControlActive) stopTeleop();
+      updateSafetyButton();
+    });
+    function updateSafetyButton() {
+      const button = document.getElementById("safety-toggle");
+      button.textContent = state.safetyPaused ? "START" : "STOP";
+      button.classList.toggle("paused", state.safetyPaused);
+      const movementDisabled = state.safetyPaused || !state.manualControlActive || state.operationMode !== "robot";
+      document.querySelectorAll("button[data-control]").forEach((control) => control.disabled = movementDisabled);
+      document.getElementById("navigate-target").disabled = state.safetyPaused || !state.selectedMapTarget || !state.navigationAvailable;
+      const takeButton = document.getElementById("take-control");
+      takeButton.textContent = state.manualControlActive ? "Release Control" : "Take Control";
+      takeButton.disabled = state.safetyPaused;
+      const keyboardText = document.querySelector("#robot-controls .control-row:last-child strong");
+      if (keyboardText) keyboardText.textContent = state.manualControlActive ? "W/S A/D Q/E" : "Press Take Control first";
     }
 
-    function renderDummyMap(data) {
-      const map = document.getElementById("greenhouse-map");
-      map.innerHTML = `
-        <div class="map-title">
-          <span>2D Greenhouse Map</span>
-          <span>${data.flowers.length} flowers across ${data.beds.length} beds</span>
-        </div>
-        <span class="robot-marker" title="Robot placeholder"></span>
-      `;
-      data.beds.forEach((bed) => {
-        const zone = document.createElement("section");
-        zone.className = "bed-zone";
-        zone.innerHTML = `<div class="bed-zone-label">Bed ${bed.bed_id}</div><div class="flower-grid"></div>`;
-        const flowerGrid = zone.querySelector(".flower-grid");
-        data.flowers.filter((flower) => flower.bed_id === bed.bed_id).forEach((flower) => {
-          const marker = document.createElement("button");
-          marker.className = "flower-marker";
-          marker.dataset.health = flower.health || "unknown";
-          marker.classList.toggle("selected", state.selectedFlower === flower.flower_id);
-          marker.textContent = flower.flower_id;
-          marker.title = `${flower.flower_id}: ${flower.health}, ${flower.height_cm} cm, ${flower.color}`;
-          marker.addEventListener("click", () => selectFlower(flower, data));
-          flowerGrid.appendChild(marker);
+    function mapToCanvas(map, canvas) {
+      const cell = Math.max(1, Math.floor(Math.min(canvas.width / map.width, canvas.height / map.height)));
+      return {
+        cell,
+        x0: Math.floor((canvas.width - map.width * cell) / 2),
+        y0: Math.floor((canvas.height - map.height * cell) / 2),
+      };
+    }
+    function worldToCanvas(map, canvas, x, y) {
+      const geom = mapToCanvas(map, canvas);
+      const mx = (x - map.origin.x) / map.resolution;
+      const my = (y - map.origin.y) / map.resolution;
+      return {
+        x: geom.x0 + mx * geom.cell,
+        y: geom.y0 + (map.height - 1 - my) * geom.cell,
+      };
+    }
+    function canvasToWorld(map, canvas, px, py) {
+      const geom = mapToCanvas(map, canvas);
+      const mx = (px - geom.x0) / geom.cell;
+      const my = map.height - 1 - (py - geom.y0) / geom.cell;
+      if (mx < 0 || my < 0 || mx >= map.width || my >= map.height) return null;
+      return {
+        x: map.origin.x + mx * map.resolution,
+        y: map.origin.y + my * map.resolution,
+      };
+    }
+    function pointToXY(point) {
+      if (!point) return null;
+      if (Array.isArray(point) && point.length >= 2) {
+        const x = Number(point[0]);
+        const y = Number(point[1]);
+        return Number.isFinite(x) && Number.isFinite(y) ? {x, y} : null;
+      }
+      const source = point.position && typeof point.position === "object" ? point.position : point;
+      if (source.x == null || source.y == null) return null;
+      const x = Number(source.x);
+      const y = Number(source.y);
+      return Number.isFinite(x) && Number.isFinite(y) ? {x, y} : null;
+    }
+    function pointsToXY(points) {
+      if (!Array.isArray(points)) return [];
+      return points.map(pointToXY).filter(Boolean);
+    }
+    function sizeToWH(size) {
+      if (!size) return null;
+      if (Array.isArray(size) && size.length >= 2) {
+        const width = Number(size[0]);
+        const height = Number(size[1]);
+        return Number.isFinite(width) && Number.isFinite(height) ? {width, height} : null;
+      }
+      if ((size.width ?? size.w ?? size.x) == null || (size.height ?? size.h ?? size.y) == null) return null;
+      const width = Number(size.width ?? size.w ?? size.x);
+      const height = Number(size.height ?? size.h ?? size.y);
+      return Number.isFinite(width) && Number.isFinite(height) ? {width, height} : null;
+    }
+    function candidateSet() {
+      return state.reviewMode && state.frozenCandidates ? state.frozenCandidates : state.candidates;
+    }
+    function candidateLabel(candidate) {
+      return state.classifications[candidate.id] || "unclassified";
+    }
+    function candidateColor(candidate) {
+      const label = candidateLabel(candidate);
+      if (label === "wall") return "#d8e0dc";
+      if (label === "bed") return "#69c174";
+      if (label === "obstacle") return "#d96b5f";
+      if (label === "false_scan") return "#e1b94b";
+      return "#8fa19a";
+    }
+    function safeMapReviewResult() {
+      const objects = [];
+      const removed = [];
+      (state.frozenCandidates || []).forEach((candidate) => {
+        const classification = state.classifications[candidate.id] || "unclassified";
+        if (classification === "unclassified" || classification === "false_scan") {
+          removed.push(candidate.id);
+          return;
+        }
+        objects.push({
+          id: candidate.id,
+          class: classification,
+          geometryType: candidate.geometryType || "unknown",
+          geometry: candidate.raw && candidate.raw.geometry ? candidate.raw.geometry : {},
+          source: candidate.source || ""
         });
-        map.appendChild(zone);
       });
+      return {objects, removed_false_scans: removed};
     }
-
-    function renderBedSummaries(data) {
-      const summaries = document.getElementById("bed-summaries");
-      summaries.innerHTML = "";
-      data.beds.forEach((bed) => {
-        const card = document.createElement("article");
-        card.className = "bed-card";
-        card.innerHTML = `
-          <h3>Bed ${bed.bed_id}</h3>
-          <p><strong>${bed.totalFlowers}</strong> total flowers</p>
-          <p><strong>${bed.averageHeightCm} cm</strong> average height</p>
-          <p><strong>${bed.healthyFlowers}</strong> healthy</p>
-          <p><strong>${bed.riskFlowers}</strong> warning / critical</p>
-          <p><strong>${bed.readyFlowers}</strong> ready for harvest</p>
-        `;
-        summaries.appendChild(card);
-      });
-    }
-
-    function renderFlowerList(data) {
-      const existing = document.getElementById("flower-list");
-      if (!existing) return;
-      existing.innerHTML = "";
-      data.flowers.forEach((flower) => {
-        const button = document.createElement("button");
-        button.textContent = flower.flower_id;
-        button.classList.toggle("active", flower.flower_id === state.selectedFlower);
-        button.addEventListener("click", () => selectFlower(flower, data));
-        existing.appendChild(button);
-      });
-    }
-
-    function renderFlowerDetail(flower, data) {
-      const detail = document.getElementById("flower-detail");
-      detail.innerHTML = `
-        <h2>Flower ${flower.flower_id}</h2>
-        <p><strong>Bed:</strong> ${flower.bed_id}</p>
-        <p><strong>Height:</strong> ${flower.height_cm} cm</p>
-        <p><strong>Color:</strong> ${flower.color}</p>
-        <p><strong>Health:</strong> ${flower.health}</p>
-        <p><strong>Growth stage:</strong> ${flower.growth_stage}</p>
-        <p><strong>Bug detected:</strong> ${flower.bug_detected ? "yes" : "no"}</p>
-        <p><strong>Ready for harvest:</strong> ${flower.ready_for_harvest ? "yes" : "no"}</p>
-        <p><strong>Confidence:</strong> ${Math.round((flower.confidence || 0) * 100)}%</p>
-        <p><strong>Last scan:</strong> ${flower.last_scan_time || "unknown"}</p>
-        <p><strong>Notes:</strong> ${flower.notes || "none"}</p>
-        <button id="inspect-bed">Inspect this flower's bed</button>
-        <p id="inspect-confirmation"></p>
-        <div class="flower-list" id="flower-list"></div>
-      `;
-      document.getElementById("inspect-bed").addEventListener("click", () => inspectFlower(flower.flower_id));
-      renderFlowerList(data);
-    }
-
-    function renderReport(report) {
-      document.getElementById("bed-count").textContent = report.totalBeds;
-      document.getElementById("flower-count").textContent = report.totalFlowers;
-      document.getElementById("healthy-count").textContent = report.healthyBeds;
-      document.getElementById("risk-count").textContent = report.riskBeds;
-      document.getElementById("ready-count").textContent = report.readyBeds;
-      document.getElementById("average-height").textContent = `${report.averageHeightCm} cm`;
-      document.getElementById("last-scan").textContent = report.lastScanTime || "unknown";
-      document.getElementById("next-action").textContent = report.nextAction;
-    }
-
-    function drawMap(data) {
-      const canvas = document.getElementById("map-canvas");
-      const greenhouse = document.getElementById("greenhouse-map");
-      if (!data.map || !data.map.width || !data.map.height) {
-        canvas.style.display = "none";
-        greenhouse.style.display = "grid";
+    function renderSafeMapResult() {
+      const container = document.getElementById("safe-map-result");
+      if (!state.safeMapResult) {
+        container.style.display = "none";
+        container.innerHTML = "";
         return;
       }
-      greenhouse.style.display = "none";
-      canvas.style.display = "block";
-      const ctx = canvas.getContext("2d");
-      const width = data.map.width;
-      const height = data.map.height;
-      const cell = Math.max(1, Math.floor(Math.min(canvas.width / width, canvas.height / height)));
-      ctx.fillStyle = "#0a0d0c";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const x0 = Math.floor((canvas.width - width * cell) / 2);
-      const y0 = Math.floor((canvas.height - height * cell) / 2);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const value = data.map.data[y * width + x];
-          ctx.fillStyle = value < 0 ? "#26312d" : value > 50 ? "#d8e0dc" : "#111815";
-          ctx.fillRect(x0 + x * cell, y0 + (height - 1 - y) * cell, cell, cell);
+      container.style.display = "";
+      container.innerHTML = `
+        <h3>Safe Map Save Review</h3>
+        <p>Objects kept: ${state.safeMapResult.objects.length}</p>
+        <p>Removed false scans: ${state.safeMapResult.removed_false_scans.join(", ") || "none"}</p>
+      `;
+    }
+    function candidateBounds(points) {
+      if (!points.length) return null;
+      const xs = points.map((point) => point.x);
+      const ys = points.map((point) => point.y);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      return {
+        pose: {x: minX, y: minY},
+        size: {width: maxX - minX, height: maxY - minY},
+      };
+    }
+    function drawWorldPolyline(ctx, map, canvas, points, closePath, fill) {
+      const canvasPoints = points.map((point) => worldToCanvas(map, canvas, point.x, point.y));
+      if (!canvasPoints.length) return false;
+      ctx.beginPath();
+      ctx.moveTo(canvasPoints[0].x, canvasPoints[0].y);
+      canvasPoints.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      if (closePath && canvasPoints.length > 2) ctx.closePath();
+      if (fill && canvasPoints.length > 2) ctx.fill();
+      ctx.stroke();
+      return true;
+    }
+    function drawCandidateOverlay(ctx, map, canvas, candidate, selected) {
+      const classification = state.classifications[candidate.id];
+      if (classification === "false_scan") return "";
+      const color = candidateColor(candidate);
+      const type = String(candidate.geometryType || "unknown").toLowerCase();
+      const rawGeometry = candidate.raw && candidate.raw.geometry && typeof candidate.raw.geometry === "object" ? candidate.raw.geometry : {};
+      const points = pointsToXY(candidate.points && candidate.points.length ? candidate.points : rawGeometry.points);
+      const pose = pointToXY(candidate.pose || rawGeometry.pose);
+      const size = sizeToWH(candidate.size || rawGeometry.size);
+      const center = pointToXY(candidate.center || rawGeometry.center);
+      const radius = Number(candidate.radius ?? rawGeometry.radius);
+      const start = pointToXY(candidate.start || rawGeometry.start);
+      const end = pointToXY(candidate.end || rawGeometry.end);
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = `${color}33`;
+      ctx.lineWidth = selected ? 4 : 2;
+      ctx.setLineDash(selected ? [] : [8, 5]);
+
+      let rendered = false;
+      if ((classification === "bed" || type.includes("rect")) && points.length >= 2 && (!pose || !size)) {
+        const bounds = candidateBounds(points);
+        if (bounds) {
+          const bottomLeft = bounds.pose;
+          const topRight = {x: bounds.pose.x + bounds.size.width, y: bounds.pose.y + bounds.size.height};
+          rendered = drawWorldPolyline(ctx, map, canvas, [
+            bottomLeft,
+            {x: topRight.x, y: bottomLeft.y},
+            topRight,
+            {x: bottomLeft.x, y: topRight.y},
+          ], true, true);
+        }
+      } else if ((type.includes("rect") || classification === "bed") && pose && size) {
+        const corners = [
+          pose,
+          {x: pose.x + size.width, y: pose.y},
+          {x: pose.x + size.width, y: pose.y + size.height},
+          {x: pose.x, y: pose.y + size.height},
+        ];
+        rendered = drawWorldPolyline(ctx, map, canvas, corners, true, true);
+      } else if ((type.includes("polygon") || type === "walls" || type === "wall") && points.length >= 3) {
+        rendered = drawWorldPolyline(ctx, map, canvas, points, true, true);
+      } else if ((type.includes("line") || type === "walls" || type === "wall") && points.length >= 2) {
+        rendered = drawWorldPolyline(ctx, map, canvas, points, false, false);
+      } else if ((type.includes("line") || type === "segment") && start && end) {
+        rendered = drawWorldPolyline(ctx, map, canvas, [start, end], false, false);
+      } else if (type.includes("circle") && center && Number.isFinite(radius)) {
+        const canvasCenter = worldToCanvas(map, canvas, center.x, center.y);
+        const canvasRadius = Math.max(2, radius / map.resolution * mapToCanvas(map, canvas).cell);
+        ctx.beginPath();
+        ctx.arc(canvasCenter.x, canvasCenter.y, canvasRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        rendered = true;
+      }
+
+      const segments = rawGeometry.segments || candidate.segments || [];
+      if (!rendered && Array.isArray(segments) && segments.length) {
+        rendered = segments.some((segment) => {
+          const segmentStart = pointToXY(segment.start || segment[0]);
+          const segmentEnd = pointToXY(segment.end || segment[1]);
+          return segmentStart && segmentEnd && drawWorldPolyline(ctx, map, canvas, [segmentStart, segmentEnd], false, false);
+        });
+      }
+
+      if (rendered) {
+        const labelPoint = points[0] || pose || center || start;
+        if (labelPoint) {
+          const label = worldToCanvas(map, canvas, labelPoint.x, labelPoint.y);
+          ctx.setLineDash([]);
+          ctx.fillStyle = color;
+          ctx.font = "13px sans-serif";
+          ctx.fillText(candidate.id || "candidate", label.x + 6, label.y - 6);
         }
       }
-      if (data.robotPose && Number.isFinite(data.robotPose.x) && data.map.resolution) {
-        const rx = Math.round((data.robotPose.x - data.map.origin.x) / data.map.resolution);
-        const ry = Math.round((data.robotPose.y - data.map.origin.y) / data.map.resolution);
+      ctx.restore();
+      return rendered ? "" : "Artifact could not be rendered";
+    }
+    function drawCandidateOverlays(ctx, map, canvas) {
+      if (!map) return;
+      const warnings = [];
+      candidateSet().forEach((candidate) => {
+        const warning = drawCandidateOverlay(ctx, map, canvas, candidate, candidate.id === state.selectedCandidateId);
+        if (warning) warnings.push(`${candidate.id || "candidate"}: ${warning}`);
+      });
+      state.renderWarnings = warnings;
+    }
+    function drawOccupancyGrid(canvasId, placeholderId, map, robotPose, showRobot, selectedTarget) {
+      const canvas = document.getElementById(canvasId);
+      const placeholder = document.getElementById(placeholderId);
+      if (!map || !map.width || !map.height || !Array.isArray(map.data)) {
+        canvas.style.display = "none";
+        placeholder.style.display = "grid";
+        return;
+      }
+      placeholder.style.display = "none";
+      canvas.style.display = "block";
+      const ctx = canvas.getContext("2d");
+      const {cell, x0, y0} = mapToCanvas(map, canvas);
+      ctx.fillStyle = "#0a0d0c";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (let y = 0; y < map.height; y++) {
+        for (let x = 0; x < map.width; x++) {
+          const value = map.data[y * map.width + x];
+          ctx.fillStyle = value < 0 ? "#26312d" : value > 50 ? "#d8e0dc" : "#111815";
+          ctx.fillRect(x0 + x * cell, y0 + (map.height - 1 - y) * cell, cell, cell);
+        }
+      }
+      if (selectedTarget) {
+        const target = worldToCanvas(map, canvas, selectedTarget.x, selectedTarget.y);
+        ctx.strokeStyle = "#e1b94b";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, 10, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(target.x - 14, target.y);
+        ctx.lineTo(target.x + 14, target.y);
+        ctx.moveTo(target.x, target.y - 14);
+        ctx.lineTo(target.x, target.y + 14);
+        ctx.stroke();
+      }
+      if (showRobot && robotPose && Number.isFinite(robotPose.x) && map.resolution) {
+        const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
         ctx.fillStyle = "#66a8d9";
         ctx.beginPath();
-        ctx.arc(x0 + rx * cell, y0 + (height - 1 - ry) * cell, 8, 0, Math.PI * 2);
+        ctx.arc(robot.x, robot.y, 8, 0, Math.PI * 2);
         ctx.fill();
       }
+      drawCandidateOverlays(ctx, map, canvas);
+    }
+
+    document.getElementById("dashboard-map-canvas").addEventListener("click", (event) => {
+      if (!state.latestMap) return;
+      const canvas = event.currentTarget;
+      const rect = canvas.getBoundingClientRect();
+      const target = canvasToWorld(
+        state.latestMap,
+        canvas,
+        (event.clientX - rect.left) * (canvas.width / rect.width),
+        (event.clientY - rect.top) * (canvas.height / rect.height)
+      );
+      if (!target) return;
+      state.selectedMapTarget = target;
+      document.getElementById("selected-target").textContent = `Selected ${target.x.toFixed(2)}, ${target.y.toFixed(2)}`;
+      updateSafetyButton();
+      renderMaps({map: state.latestMap, robotPose: null});
+    });
+    document.getElementById("navigate-target").addEventListener("click", async () => {
+      if (!state.selectedMapTarget) return;
+      const data = await postJson("/api/navigation/goal", state.selectedMapTarget);
+      document.getElementById("navigation-message").textContent = data.message;
+    });
+
+    function renderMaps(data) {
+      const map = state.reviewMode && state.frozenMap ? state.frozenMap : data.map;
+      drawOccupancyGrid("dashboard-map-canvas", "dashboard-map-placeholder", map, null, false, state.selectedMapTarget);
+      drawOccupancyGrid("teleop-map-canvas", "teleop-map-placeholder", map, data.robotPose, true, null);
+    }
+    function maybeRenderMaps(data) {
+      const map = state.reviewMode && state.frozenMap ? state.frozenMap : data.map;
+      const stamp = map ? map.receivedAt : null;
+      const candidateStamp = state.reviewMode ? "review" : state.artifactCandidatesReceivedAt;
+      const periodMs = Math.max(1, Number(data.topics.mapUpdatePeriodSec || 20)) * 1000;
+      const now = Date.now();
+      if (!map) {
+        renderMaps(data);
+        return;
+      }
+      if (
+        candidateStamp !== state.lastCandidateStamp ||
+        (stamp !== state.lastMapStamp && (now - state.lastMapRenderMs >= periodMs || !state.lastMapStamp))
+      ) {
+        state.lastMapStamp = stamp;
+        state.lastCandidateStamp = candidateStamp;
+        state.lastMapRenderMs = now;
+        renderMaps(data);
+      }
+    }
+
+    function timeSince(timestamp) {
+      if (!timestamp) return "not available";
+      const parsed = Date.parse(timestamp);
+      if (!Number.isFinite(parsed)) return "not available";
+      const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 1) return "less than 1 min ago";
+      if (minutes < 60) return `${minutes} min ago`;
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+      const days = Math.round(hours / 24);
+      return `${days} ${days === 1 ? "day" : "days"} ago`;
+    }
+    function mapAgeText(map) {
+      if (!map || !map.receivedAt) return "Last SLAM map: not received yet";
+      const parsed = Date.parse(map.receivedAt);
+      if (!Number.isFinite(parsed)) return "Last SLAM map: not received yet";
+      const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
+      return `Last SLAM map: ${seconds} sec ago`;
+    }
+    function renderReport(report, plants) {
+      document.getElementById("bed-count").textContent = report.totalBeds;
+      document.getElementById("flower-count").textContent = report.totalFlowers;
+      document.getElementById("last-scan").textContent = timeSince(report.lastScanTime);
+      document.getElementById("next-action").textContent = report.nextAction || "Waiting for real data";
+      const records = document.getElementById("plant-records");
+      records.innerHTML = "<h2>Plant Records</h2>";
+      if (!plants.length) {
+        const empty = document.createElement("p");
+        empty.textContent = "No plant records received";
+        records.appendChild(empty);
+        return;
+      }
+      plants.forEach((plant) => {
+        const row = document.createElement("div");
+        row.className = "control-row";
+        const name = plant.flower_id || "unidentified plant";
+        const parts = [];
+        if (plant.color) parts.push(plant.color);
+        if (plant.growth_stage) parts.push(plant.growth_stage);
+        if (plant.ready_for_harvest) parts.push("ready");
+        if (plant.last_scan_time) parts.push(`last scan ${timeSince(plant.last_scan_time)}`);
+        row.innerHTML = `<span>${name}</span><strong>${parts.join(", ") || "real record received"}</strong>`;
+        records.appendChild(row);
+      });
+    }
+    function renderBeds(data) {
+      const container = document.getElementById("bed-overview");
+      container.innerHTML = "";
+      const beds = data.beds || [];
+      if (!beds.length) {
+        const empty = document.createElement("p");
+        empty.textContent = "Waiting for bed telemetry";
+        container.appendChild(empty);
+        return;
+      }
+      beds.forEach((bed) => {
+        const card = document.createElement("article");
+        card.className = `bed-card ${bed.available ? "available" : "unavailable"}`;
+        card.innerHTML = `
+          <h3>Bed ${bed.bed_id}</h3>
+          <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
+          <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
+          <p><strong>${bed.bugs_detected == null ? "unavailable" : (bed.bugs_detected ? "yes" : "no")}</strong>bugs detected</p>
+        `;
+        container.appendChild(card);
+      });
+    }
+    function renderCandidates() {
+      const list = document.getElementById("candidate-list");
+      list.innerHTML = "";
+      const detail = document.getElementById("candidate-detail");
+      const candidates = candidateSet();
+      const parseError = document.getElementById("candidate-parse-error");
+      const renderWarnings = state.renderWarnings || [];
+      document.getElementById("mapping-map-time").textContent = mapAgeText(state.latestMap);
+      parseError.style.display = state.artifactCandidatesParseError || renderWarnings.length ? "" : "none";
+      parseError.textContent = [state.artifactCandidatesParseError, ...renderWarnings].filter(Boolean).join(" | ");
+      if (!candidates.length) {
+        document.getElementById("candidate-state").textContent = "No artifact candidates received";
+        detail.innerHTML = "<h3>Artifact</h3><p>No artifact candidates received</p>";
+        document.querySelectorAll("button[data-classification]").forEach((button) => button.disabled = true);
+        return;
+      }
+      document.getElementById("candidate-state").textContent = `${candidates.length} artifacts received`;
+      candidates.forEach((candidate) => {
+        const button = document.createElement("button");
+        const label = document.createElement("span");
+        label.textContent = candidate.id || "candidate";
+        const meta = document.createElement("small");
+        meta.textContent = `classification: ${candidateLabel(candidate)}`;
+        button.appendChild(label);
+        button.appendChild(meta);
+        button.classList.toggle("active", candidate.id === state.selectedCandidateId);
+        button.addEventListener("click", () => {
+          state.selectedCandidateId = candidate.id;
+          renderMaps({map: state.reviewMode && state.frozenMap ? state.frozenMap : state.latestMap, robotPose: null});
+          renderCandidates();
+        });
+        list.appendChild(button);
+      });
+      const selected = candidates.find((candidate) => candidate.id === state.selectedCandidateId);
+      if (!selected) {
+        detail.innerHTML = "<h3>Artifact</h3><p>Select an artifact to classify.</p>";
+        document.querySelectorAll("button[data-classification]").forEach((button) => button.disabled = true);
+        return;
+      }
+      detail.innerHTML = `
+        <h3>Candidate ${selected.id}</h3>
+        <p>Classification: ${candidateLabel(selected)}</p>
+      `;
+      document.querySelectorAll("button[data-classification]").forEach((button) => button.disabled = false);
+      renderSafeMapResult();
+    }
+
+    document.querySelectorAll("button[data-classification]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!state.selectedCandidateId) return;
+        if (button.dataset.classification === "unclassified") delete state.classifications[state.selectedCandidateId];
+        else state.classifications[state.selectedCandidateId] = button.dataset.classification;
+        state.safeMapResult = null;
+        document.getElementById("save-safe-map-warning").style.display = "none";
+        renderMaps({map: state.reviewMode && state.frozenMap ? state.frozenMap : state.latestMap, robotPose: null});
+        renderCandidates();
+      });
+    });
+    document.getElementById("start-mapping").addEventListener("click", async () => {
+      const data = await postJson("/api/mapping/start");
+      document.getElementById("workflow-message").textContent = data.message;
+    });
+    document.getElementById("done-mapping").addEventListener("click", async () => {
+      if (!state.latestMap) return;
+      const data = await postJson("/api/mapping/done");
+      state.frozenMap = JSON.parse(JSON.stringify(state.latestMap));
+      state.frozenCandidates = JSON.parse(JSON.stringify(state.candidates || []));
+      state.reviewMode = true;
+      state.classifications = {};
+      state.safeMapResult = null;
+      document.getElementById("save-safe-map-warning").style.display = "none";
+      if (!state.frozenCandidates.some((candidate) => candidate.id === state.selectedCandidateId)) state.selectedCandidateId = null;
+      document.getElementById("workflow-message").textContent = data.message || (state.frozenCandidates.length ? "Reviewing frozen real artifact candidates" : "No artifact candidates received");
+      renderMaps({map: state.frozenMap, robotPose: null});
+      renderCandidates();
+    });
+    document.getElementById("retry-mapping").addEventListener("click", () => {
+      if (!state.frozenMap) return;
+      state.reviewMode = false;
+      state.frozenCandidates = null;
+      state.classifications = {};
+      state.safeMapResult = null;
+      state.selectedCandidateId = null;
+      document.getElementById("save-safe-map-warning").style.display = "none";
+      renderMaps({map: state.latestMap, robotPose: null});
+      renderCandidates();
+    });
+    document.getElementById("save-safe-map").addEventListener("click", async () => {
+      const reviewResult = safeMapReviewResult();
+      const unclassifiedCount = (state.frozenCandidates || []).filter((candidate) => !state.classifications[candidate.id]).length;
+      const data = await postJson("/api/mapping/save_safe_map", {
+        classifications: state.classifications,
+        candidates: state.frozenCandidates || [],
+        safeMapReview: reviewResult
+      });
+      state.safeMapResult = data.safeMapReview || reviewResult;
+      const warning = document.getElementById("save-safe-map-warning");
+      warning.style.display = unclassifiedCount ? "" : "none";
+      warning.textContent = unclassifiedCount ? "Unclassified artifacts will be saved as false_scan." : "";
+      document.getElementById("workflow-message").textContent = unclassifiedCount ? `${data.message}. Unclassified artifacts will be saved as false_scan.` : data.message;
+      renderSafeMapResult();
+    });
+
+    function saveDisabledReason(data) {
+      if (state.safetyPaused) return "START required before safe-map save";
+      if (!data.mapping.saveSafeMapAvailable) return "Save safe map unavailable";
+      if (!state.reviewMode || !state.frozenMap) return "No reviewed map yet";
+      if (!state.frozenCandidates || !state.frozenCandidates.length) return "No artifact candidates received";
+      return "";
+    }
+
+    document.getElementById("task-mode").addEventListener("change", async (event) => {
+      if (!event.target.value) return;
+      const data = await postJson("/api/task_mode", {mode: event.target.value});
+      document.getElementById("task-message").textContent = data.message;
+    });
+    document.getElementById("operation-mode").addEventListener("change", (event) => {
+      state.operationMode = event.target.value;
+      stopTeleop();
+      document.getElementById("robot-controls").style.display = state.operationMode === "robot" ? "" : "none";
+      document.getElementById("arm-controls").style.display = state.operationMode === "arm" ? "" : "none";
+      updateSafetyButton();
+    });
+    document.getElementById("robot-ops-return").addEventListener("click", () => {
+      document.getElementById("operation-mode").value = "robot";
+      document.getElementById("operation-mode").dispatchEvent(new Event("change"));
+    });
+    document.getElementById("take-control").addEventListener("click", async () => {
+      const data = await postJson("/api/take_control");
+      state.manualControlActive = data.manualControlActive;
+      document.getElementById("take-control-message").textContent = data.message;
+      if (!state.manualControlActive) stopTeleop();
+      updateSafetyButton();
+    });
+    document.getElementById("camera-select").addEventListener("change", async (event) => {
+      const data = await postJson("/api/camera/select", {camera: event.target.value});
+      document.getElementById("camera-state").textContent = data.message;
+      document.getElementById("camera-feed").src = `/stream.mjpg?camera=${event.target.value}&t=${Date.now()}`;
+    });
+    function renderArmButtons(data) {
+      const grid = document.getElementById("arm-pose-buttons");
+      grid.innerHTML = "";
+      (data.arm.availablePoses || []).forEach((pose) => {
+        const button = document.createElement("button");
+        button.textContent = pose.replaceAll("_", " ");
+        button.disabled = !data.arm.poseBackendAvailable || state.safetyPaused;
+        button.addEventListener("click", async () => {
+          const result = await postJson("/api/arm/pose", {pose});
+          document.getElementById("arm-message").textContent = result.message;
+        });
+        grid.appendChild(button);
+      });
+      document.getElementById("arm-message").textContent = data.arm.poseBackendAvailable ? "Arm pose backend available" : "Arm pose backend unavailable";
     }
 
     async function refreshStatus() {
       try {
         const response = await fetch("/api/status");
         const data = await response.json();
-        document.getElementById("connection").textContent = data.dummyMode
-          ? "Dummy mode"
-          : (data.rosConnected ? "ROS connected" : "ROS waiting");
-        document.getElementById("battery").textContent = data.batteryPercent == null
-          ? "Battery --"
-          : `Battery ${Math.round(data.batteryPercent)}%`;
-        document.getElementById("cmd-topic").textContent = data.topics.cmdVel;
-        document.getElementById("camera-state").textContent = data.cameraReady ? "online" : "waiting";
+        state.topics = data.topics;
+        state.candidates = data.artifactCandidates || [];
+        state.artifactCandidatesReceivedAt = data.artifactCandidatesReceivedAt;
+        state.artifactCandidatesParseError = data.artifactCandidatesParseError || "";
+        if (!candidateSet().some((candidate) => candidate.id === state.selectedCandidateId)) state.selectedCandidateId = null;
+        state.safetyPaused = data.safetyPaused;
+        state.manualControlActive = data.manualControlActive;
+        state.navigationAvailable = data.navigation.available;
+        if (data.map) state.latestMap = data.map;
+        document.getElementById("connection").textContent = data.rosConnected ? "ROS node running" : "ROS waiting";
+        document.getElementById("battery").textContent = data.batteryPercent == null ? "Battery --" : `Battery ${Math.round(data.batteryPercent)}%`;
+        document.getElementById("camera-state").textContent = data.cameraReady ? `${data.camera.current} online` : `${data.camera.current} waiting`;
         document.getElementById("camera-feed").style.display = data.cameraReady ? "block" : "none";
-        document.getElementById("camera-placeholder").style.display = data.cameraReady ? "none" : "block";
-        if (!state.selectedFlower && data.flowers.length) state.selectedFlower = data.flowers[0].flower_id;
-        renderDummyMap(data);
-        renderBedSummaries(data);
-        if (state.selectedFlower) {
-          const selected = data.flowers.find((flower) => flower.flower_id === state.selectedFlower);
-          if (selected) renderFlowerDetail(selected, data);
+        document.getElementById("camera-placeholder").style.display = data.cameraReady ? "none" : "grid";
+        document.getElementById("camera-select").value = data.camera.current;
+        document.querySelector('#camera-select option[value="arm"]').disabled = !data.camera.armAvailable;
+        const mapText = data.map ? `Map ${data.map.width}x${data.map.height} at ${data.map.resolution} m/cell` : "Waiting for SLAM map";
+        document.getElementById("map-state").textContent = mapText;
+        document.getElementById("map-meta").textContent = mapAgeText(state.latestMap);
+        document.getElementById("dashboard-map-time").textContent = mapAgeText(state.latestMap);
+        document.getElementById("pose-state").textContent = data.robotPose ? "robot pose live" : "robot pose unavailable";
+        maybeRenderMaps(data);
+        renderReport(data.report, data.plants);
+        renderBeds(data);
+        document.getElementById("task-mode").disabled = state.safetyPaused || !data.taskMode.available;
+        if (data.taskMode.available) {
+          document.getElementById("task-message").textContent = data.taskMode.current ? `Current backend state: ${data.taskMode.current}` : "Task mode backend available";
         }
-        renderReport(data.report);
-        drawMap(data);
+        document.getElementById("navigate-target").disabled = state.safetyPaused || !state.selectedMapTarget || !data.navigation.available;
+        document.getElementById("navigation-message").textContent = data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable";
+        document.getElementById("take-control-message").textContent = state.manualControlActive ? "Manual teleop control active" : data.takeControl.message;
+        const startReason = state.safetyPaused ? "START required before mapping commands" : (!data.mapping.startAvailable ? "Start mapping service unavailable" : "");
+        const doneReason = !data.map ? "No map received yet" : (!data.mapping.doneBackendAvailable ? "No finalize backend; UI will freeze latest received map" : "");
+        const saveReason = saveDisabledReason(data);
+        document.getElementById("start-mapping").disabled = Boolean(startReason);
+        document.getElementById("start-mapping").title = startReason;
+        document.getElementById("done-mapping").disabled = !data.map;
+        document.getElementById("done-mapping").title = doneReason;
+        document.getElementById("retry-mapping").disabled = !state.frozenMap;
+        document.getElementById("save-safe-map").disabled = Boolean(saveReason);
+        document.getElementById("save-safe-map").title = saveReason;
+        if (startReason && !state.reviewMode) document.getElementById("workflow-message").textContent = startReason;
+        else if (saveReason && state.reviewMode) document.getElementById("workflow-message").textContent = saveReason;
+        renderCandidates();
+        renderArmButtons(data);
+        updateSafetyButton();
       } catch (error) {
         document.getElementById("connection").textContent = "UI server offline";
       }
@@ -804,9 +1277,7 @@ def env_web_port() -> int:
         port = int(value)
     except ValueError:
         return DEFAULT_WEB_PORT
-    if 1 <= port <= 65535:
-        return port
-    return DEFAULT_WEB_PORT
+    return port if 1 <= port <= 65535 else DEFAULT_WEB_PORT
 
 
 def request_hostname(host_header: str) -> str:
@@ -819,7 +1290,6 @@ def request_hostname(host_header: str) -> str:
 
 
 def dynamic_rosbridge_url(configured_url: str, host_header: str) -> str:
-    """Use the current browser host when config points at local loopback."""
     parsed = urlparse(configured_url or "")
     if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
         return configured_url
@@ -828,84 +1298,7 @@ def dynamic_rosbridge_url(configured_url: str, host_header: str) -> str:
     hostname = request_hostname(host_header)
     port = parsed.port or 9090
     netloc = f"[{hostname}]:{port}" if ":" in hostname else f"{hostname}:{port}"
-    return urlunparse(
-        (
-            parsed.scheme,
-            netloc,
-            parsed.path or "",
-            parsed.params,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
-
-
-def default_flowers() -> dict:
-    colors = ("purple", "yellow", "red", "white", "pink")
-    data = {}
-    scan_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    running_index = 0
-    for bed_id, count in FLOWER_COUNTS.items():
-        for number in range(1, count + 1):
-            running_index += 1
-            flower_id = f"{bed_id}{number}"
-            health = "healthy"
-            if flower_id in {"B7", "C15"}:
-                health = "critical"
-            elif number in {5, 11, 18}:
-                health = "warning"
-            ready = number in {4, 8, 12, 16, 20, 22}
-            growth_stage = "ready" if ready else ("seedling" if number % 9 == 0 else "growing")
-            data[flower_id] = {
-                "flower_id": flower_id,
-                "bed_id": bed_id,
-                "height_cm": round(24.0 + (number % 7) * 2.4 + (ord(bed_id) - 65) * 1.6, 1),
-                "color": colors[(running_index + number) % len(colors)],
-                "health": health,
-                "growth_stage": growth_stage,
-                "bug_detected": flower_id in {"B7", "C15"},
-                "flower_detected": True,
-                "ready_for_harvest": ready,
-                "confidence": round(0.72 + (number % 6) * 0.035, 2),
-                "last_scan_time": scan_time,
-                "notes": "Inspect for pests" if health == "critical" else (
-                    "Ready for harvest" if ready else "Normal growth"
-                ),
-            }
-    return data
-
-
-def summarize_beds(flowers: dict) -> list:
-    summaries = []
-    for bed_id in BED_IDS:
-        bed_flowers = [
-            flower for flower in flowers.values() if flower.get("bed_id") == bed_id
-        ]
-        total = len(bed_flowers)
-        average_height = 0.0
-        if total:
-            average_height = sum(
-                float(flower.get("height_cm") or 0.0) for flower in bed_flowers
-            ) / total
-        summaries.append(
-            {
-                "bed_id": bed_id,
-                "totalFlowers": total,
-                "averageHeightCm": round(average_height, 1),
-                "healthyFlowers": sum(
-                    1 for flower in bed_flowers if flower.get("health") == "healthy"
-                ),
-                "riskFlowers": sum(
-                    1
-                    for flower in bed_flowers
-                    if flower.get("health") in {"warning", "critical"}
-                ),
-                "readyFlowers": sum(
-                    1 for flower in bed_flowers if flower.get("ready_for_harvest")
-                ),
-            }
-        )
-    return summaries
+    return urlunparse((parsed.scheme, netloc, parsed.path or "", parsed.params, parsed.query, parsed.fragment))
 
 
 def yaw_from_quaternion(q) -> float:
@@ -914,162 +1307,148 @@ def yaw_from_quaternion(q) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def _clean_text(value, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _normalize_artifact_candidate(candidate, index: int) -> tuple[dict | None, str]:
+    if not isinstance(candidate, dict):
+        return None, f"candidate {index} is not an object"
+    geometry = candidate.get("geometry")
+    if not isinstance(geometry, dict):
+        geometry = {}
+    candidate_id = _clean_text(candidate.get("id"), f"candidate_{index + 1}")
+    geometry_type = _clean_text(
+        _first_present(candidate.get("geometry_type"), geometry.get("type")),
+        "unknown",
+    )
+    pose = _first_present(candidate.get("pose"), geometry.get("pose"))
+    size = _first_present(candidate.get("size"), geometry.get("size"))
+    if pose is None and ("x" in geometry or "y" in geometry):
+        pose = {"x": geometry.get("x"), "y": geometry.get("y")}
+    if size is None and ("width" in geometry or "height" in geometry):
+        size = {"width": geometry.get("width"), "height": geometry.get("height")}
+    normalized = {
+        "id": candidate_id,
+        "candidateType": _clean_text(candidate.get("candidate_type"), "unclassified"),
+        "geometryType": geometry_type or "unknown",
+        "points": _first_present(candidate.get("points"), geometry.get("points"), []),
+        "pose": pose,
+        "size": size,
+        "radius": _first_present(candidate.get("radius"), geometry.get("radius")),
+        "center": _first_present(candidate.get("center"), geometry.get("center")),
+        "start": _first_present(candidate.get("start"), geometry.get("start")),
+        "end": _first_present(candidate.get("end"), geometry.get("end")),
+        "segments": _first_present(candidate.get("segments"), geometry.get("segments"), []),
+        "source": _clean_text(candidate.get("source")),
+        "raw": copy.deepcopy(candidate),
+    }
+    if not normalized["points"] and normalized["geometryType"] == "unknown":
+        return normalized, f"{candidate_id}: unknown geometry"
+    return normalized, ""
+
+
 class UiNode(Node):
-    """Embedded operator web UI for dashboard, camera, and safe teleoperation."""
+    """Embedded operator web UI for dashboard, camera, mapping, and teleop."""
 
     def __init__(self) -> None:
         super().__init__("ui_node")
         self._config = load_config()
-        self.declare_parameter(
-            "web_host",
-            os.getenv("SIMBIOSYS_UI_HOST", DEFAULT_WEB_HOST),
-        )
-        self.declare_parameter("web_port", env_web_port())
-        self.declare_parameter("dummy_mode", bool(self._config["dummyMode"]))
-
-        parameter_dummy = self.get_parameter("dummy_mode").value
-        self._config["dummyMode"] = bool(parameter_dummy)
         self._topics = self._config["topics"]
+
+        self.declare_parameter("web_host", os.getenv("SIMBIOSYS_UI_HOST", DEFAULT_WEB_HOST))
+        self.declare_parameter("web_port", env_web_port())
         self.declare_parameter("cmd_vel_topic", self._topics["cmdVel"])
-        self.declare_parameter("image_topic", self._topics["cameraRaw"])
-        self.declare_parameter(
-            "compressed_image_topic",
-            self._topics["cameraCompressed"],
-        )
+        self.declare_parameter("image_topic", self._topics["baseCameraRaw"])
+        self.declare_parameter("compressed_image_topic", self._topics["baseCameraCompressed"])
+        self.declare_parameter("live_map_topic", self._topics["liveMap"])
         self._apply_topic_parameters()
 
         self._web_host = self.get_parameter("web_host").value
         self._web_port = int(self.get_parameter("web_port").value)
         self._bridge = CvBridge() if CvBridge is not None else None
         self._frame_lock = threading.Lock()
-        self._latest_jpeg = None
-        self._last_compressed_frame_time = 0.0
+        self._frames = {"base": None, "arm": None}
+        self._last_compressed_frame_time = {"base": 0.0, "arm": 0.0}
+        self._selected_camera = "base"
         self._last_command_time = 0.0
         self._active_controls = set()
         self._speed_mode = "normal"
-        self._flowers = default_flowers()
-        self._map = None
-        self._robot_pose = {"x": 1.5, "y": 1.0, "yaw": 0.0}
-        self._battery_percent = 86.0 if self._config["dummyMode"] else None
+        self._safety_paused = False
+        self._manual_control_active = False
+        self._plants = {}
         self._external_report = None
+        self._map = None
+        self._robot_pose = None
+        self._battery_percent = None
         self._bed_observations = {}
-        self._last_dummy_tick = 0
+        self._mapping_status = None
+        self._task_status = None
+        self._artifact_candidates = []
+        self._artifact_candidates_received_at = None
+        self._artifact_candidates_parse_error = ""
 
-        self._cmd_vel_publisher = self.create_publisher(
-            Twist,
-            self._topics["cmdVel"],
-            10,
-        )
-        self._inspect_bed_publisher = self.create_publisher(
-            String,
-            self._topics["inspectBedCommand"],
-            10,
-        )
-
-        self.create_subscription(
-            Image,
-            self._topics["cameraRaw"],
-            self._on_image,
-            10,
-        )
-        self.create_subscription(
-            CompressedImage,
-            self._topics["cameraCompressed"],
-            self._on_compressed_image,
-            10,
-        )
-        self.create_subscription(
-            OccupancyGrid,
-            self._topics["map"],
-            self._on_map,
-            10,
-        )
+        self._cmd_vel_publisher = self.create_publisher(Twist, self._topics["cmdVel"], 10)
+        self._create_camera_subscriptions()
+        if self._topics.get("liveMap"):
+            self.create_subscription(OccupancyGrid, self._topics["liveMap"], self._on_map, 10)
         self.create_subscription(Odometry, self._topics["odom"], self._on_odom, 10)
-        self.create_subscription(
-            PoseWithCovarianceStamped,
-            self._topics["amclPose"],
-            self._on_amcl_pose,
-            10,
-        )
-        self.create_subscription(
-            String,
-            self._topics["plantHealth"],
-            self._on_plant_health,
-            10,
-        )
+        self.create_subscription(PoseWithCovarianceStamped, self._topics["amclPose"], self._on_amcl_pose, 10)
+        self.create_subscription(String, self._topics["plantHealth"], self._on_plant_health, 10)
+        self.create_subscription(String, self._topics["plantHealthReport"], self._on_plant_health_report, 10)
+        self.create_subscription(BatteryState, self._topics["battery"], self._on_battery, 10)
         if PlantHealth is not None:
-            self.create_subscription(
-                PlantHealth,
-                "simbiosys/plant_health",
-                self._on_typed_plant_health,
-                10,
-            )
+            self.create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
         if BedObservation is not None:
-            self.create_subscription(
-                BedObservation,
-                self._topics.get("bedObservation", "simbiosys/bed_observation"),
-                self._on_bed_observation,
-                10,
-            )
-        self.create_subscription(
-            String,
-            self._topics["plantHealthReport"],
-            self._on_plant_health_report,
-            10,
-        )
-        self.create_subscription(
-            BatteryState,
-            self._topics["battery"],
-            self._on_battery,
-            10,
-        )
-        if FlowerData is not None:
-            self.create_subscription(
-                FlowerData,
-                "simbiosys/flower_data",
-                self._on_legacy_flower_data,
-                10,
-            )
+            self.create_subscription(BedObservation, self._topics["bedObservation"], self._on_bed_observation, 10)
+        if MappingStatus is not None:
+            self.create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
+        if TaskStatus is not None:
+            self.create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
+        if self._topics.get("artifactCandidates"):
+            self.create_subscription(String, self._topics["artifactCandidates"], self._on_artifact_candidates, 10)
+
+        self._task_mode_client = self.create_client(SetRobotMode, self._topics["setTaskMode"]) if SetRobotMode is not None else None
+        self._arm_pose_client = self.create_client(SendNamedArmPose, self._topics["sendNamedArmPose"]) if SendNamedArmPose is not None else None
+        self._behavior_client = ActionClient(self, ExecuteBehavior, self._topics["executeBehavior"]) if ExecuteBehavior is not None else None
+        self._start_mapping_client = self.create_client(Trigger, self._topics["startMapping"]) if self._topics.get("startMapping") else None
+        self._done_mapping_client = self.create_client(Trigger, self._topics["doneMapping"]) if self._topics.get("doneMapping") else None
+        self._save_safe_map_client = self.create_client(Trigger, self._topics["saveSafeMap"]) if self._topics.get("saveSafeMap") else None
 
         self.create_timer(0.1, self._on_teleop_timer)
-        self.create_timer(5.0, self._on_dummy_timer)
-
-        self._http_server = ThreadingHTTPServer(
-            (self._web_host, self._web_port),
-            self._make_handler(),
-        )
-        self._http_thread = threading.Thread(
-            target=self._http_server.serve_forever,
-            daemon=True,
-        )
+        self._http_server = ThreadingHTTPServer((self._web_host, self._web_port), self._make_handler())
+        self._http_thread = threading.Thread(target=self._http_server.serve_forever, daemon=True)
         self._http_thread.start()
 
         self._log_startup_urls()
-        self.get_logger().info(
-            f"Publishing Twist to {self._topics['cmdVel']}; dummy mode: "
-            f"{self._config['dummyMode']}"
-        )
+        self.get_logger().info(f"Publishing Twist to {self._topics['cmdVel']}; using real ROS/project data only")
 
     def _apply_topic_parameters(self) -> None:
-        configured_raw_image = (
-            self.get_parameter("image_topic").get_parameter_value().string_value
-        )
-        configured_compressed_image = (
-            self.get_parameter("compressed_image_topic")
-            .get_parameter_value()
-            .string_value
-        )
-        if (
-            configured_raw_image != self._topics["cameraRaw"]
-            and configured_compressed_image == self._topics["cameraCompressed"]
-        ):
+        configured_raw_image = self.get_parameter("image_topic").get_parameter_value().string_value
+        configured_compressed_image = self.get_parameter("compressed_image_topic").get_parameter_value().string_value
+        if configured_raw_image != self._topics["baseCameraRaw"] and configured_compressed_image == self._topics["baseCameraCompressed"]:
             configured_compressed_image = f"{configured_raw_image}/compressed"
+        self._topics["cmdVel"] = self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
+        self._topics["baseCameraRaw"] = configured_raw_image
+        self._topics["baseCameraCompressed"] = configured_compressed_image
+        self._topics["liveMap"] = self.get_parameter("live_map_topic").get_parameter_value().string_value
 
-        self._topics["cmdVel"] = (
-            self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
-        )
-        self._topics["cameraRaw"] = configured_raw_image
-        self._topics["cameraCompressed"] = configured_compressed_image
+    def _create_camera_subscriptions(self) -> None:
+        self.create_subscription(Image, self._topics["baseCameraRaw"], lambda msg: self._on_image("base", msg), 10)
+        self.create_subscription(CompressedImage, self._topics["baseCameraCompressed"], lambda msg: self._on_compressed_image("base", msg), 10)
+        if self._topics.get("armCameraRaw"):
+            self.create_subscription(Image, self._topics["armCameraRaw"], lambda msg: self._on_image("arm", msg), 10)
+        if self._topics.get("armCameraCompressed"):
+            self.create_subscription(CompressedImage, self._topics["armCameraCompressed"], lambda msg: self._on_compressed_image("arm", msg), 10)
 
     def destroy_node(self) -> bool:
         try:
@@ -1081,7 +1460,6 @@ class UiNode(Node):
         return super().destroy_node()
 
     def _detect_lan_ip(self) -> str:
-        """Best-effort LAN IP detection for startup guidance."""
         if self._web_host not in ("", "0.0.0.0"):
             return self._web_host
         try:
@@ -1099,26 +1477,14 @@ class UiNode(Node):
         return ""
 
     def _log_startup_urls(self) -> None:
-        self.get_logger().info(
-            f"Web UI listening on {self._web_host}:{self._web_port}"
-        )
+        self.get_logger().info(f"Web UI listening on {self._web_host}:{self._web_port}")
         self.get_logger().info(f"Local URL: http://localhost:{self._web_port}")
         if self._web_host in {"127.0.0.1", "localhost", "::1"}:
-            self.get_logger().info(
-                "LAN access is disabled because the UI is bound to a loopback host."
-            )
+            self.get_logger().info("LAN access is disabled because the UI is bound to a loopback host.")
             return
         lan_ip = self._detect_lan_ip()
         if lan_ip:
-            self.get_logger().info(
-                f"LAN URL: http://{lan_ip}:{self._web_port} "
-                "(same trusted local network only)"
-            )
-        else:
-            self.get_logger().info(
-                "LAN IP not detected. Run `hostname -I` and open "
-                f"http://<LAPTOP_LAN_IP>:{self._web_port} from another device."
-            )
+            self.get_logger().info(f"LAN URL: http://{lan_ip}:{self._web_port} (same trusted local network only)")
 
     def _make_handler(self):
         node = self
@@ -1128,17 +1494,30 @@ class UiNode(Node):
                 return
 
             def do_GET(self):
-                if self.path in ("/", "/index.html", "/teleop"):
+                parsed = urlparse(self.path)
+                if parsed.path in ("/", "/index.html", "/teleop"):
                     self._send_html()
-                elif self.path == "/api/status":
+                elif parsed.path == "/api/status":
                     self._send_json(node.status_payload(self.headers.get("Host", "")))
-                elif self.path == "/stream.mjpg":
+                elif parsed.path == "/stream.mjpg":
                     self._send_stream()
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
 
             def do_POST(self):
-                if self.path not in {"/api/teleop", "/api/inspect_bed"}:
+                routes = {
+                    "/api/teleop": node.set_teleop_command,
+                    "/api/safety/toggle": node.toggle_safety,
+                    "/api/navigation/goal": node.send_navigation_goal,
+                    "/api/task_mode": node.set_task_mode,
+                    "/api/take_control": node.take_control,
+                    "/api/camera/select": node.select_camera,
+                    "/api/arm/pose": node.send_arm_pose,
+                    "/api/mapping/start": node.start_mapping,
+                    "/api/mapping/done": node.done_mapping,
+                    "/api/mapping/save_safe_map": node.save_safe_map,
+                }
+                if self.path not in routes:
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
                 length = int(self.headers.get("Content-Length", "0"))
@@ -1148,20 +1527,9 @@ class UiNode(Node):
                 except json.JSONDecodeError:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid JSON")
                     return
-
-                if self.path == "/api/teleop":
-                    accepted = node.set_teleop_command(payload)
-                    if not accepted:
-                        self.send_error(HTTPStatus.BAD_REQUEST, "Unknown command")
-                        return
-                    self._send_json({"ok": True})
-                    return
-
-                accepted = node.inspect_bed(payload.get("bedId", ""))
-                if not accepted:
-                    self.send_error(HTTPStatus.BAD_REQUEST, "Unknown bed")
-                    return
-                self._send_json({"ok": True})
+                result = routes[self.path](payload)
+                status = HTTPStatus.OK if result.get("accepted", True) else HTTPStatus.BAD_REQUEST
+                self._send_json(result, status=status)
 
             def _send_html(self):
                 content = INDEX_HTML.encode("utf-8")
@@ -1171,9 +1539,9 @@ class UiNode(Node):
                 self.end_headers()
                 self.wfile.write(content)
 
-            def _send_json(self, payload):
+            def _send_json(self, payload, status=HTTPStatus.OK):
                 content = json.dumps(payload).encode("utf-8")
-                self.send_response(HTTPStatus.OK)
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
@@ -1181,10 +1549,7 @@ class UiNode(Node):
 
             def _send_stream(self):
                 self.send_response(HTTPStatus.OK)
-                self.send_header(
-                    "Content-Type",
-                    "multipart/x-mixed-replace; boundary=frame",
-                )
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 while True:
@@ -1195,9 +1560,7 @@ class UiNode(Node):
                     try:
                         self.wfile.write(b"--frame\r\n")
                         self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                        self.wfile.write(
-                            f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
-                        )
+                        self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii"))
                         self.wfile.write(frame)
                         self.wfile.write(b"\r\n")
                         time.sleep(0.08)
@@ -1208,31 +1571,85 @@ class UiNode(Node):
 
     def latest_frame(self):
         with self._frame_lock:
-            return self._latest_jpeg
+            return self._frames.get(self._selected_camera)
+
+    def _service_ready(self, client) -> bool:
+        return bool(client is not None and client.service_is_ready())
+
+    def _action_ready(self, client) -> bool:
+        return bool(client is not None and client.server_is_ready())
 
     def status_payload(self, host_header: str = "") -> dict:
+        arm_available = bool(self._topics.get("armCameraRaw") or self._topics.get("armCameraCompressed"))
         return {
-            "dummyMode": bool(self._config["dummyMode"]),
             "rosConnected": True,
-            "rosbridgeUrl": dynamic_rosbridge_url(
-                self._config["rosbridgeUrl"],
-                host_header,
-            ),
+            "rosbridgeUrl": dynamic_rosbridge_url(self._config["rosbridgeUrl"], host_header),
             "topics": self._topics,
+            "safetyPaused": self._safety_paused,
+            "manualControlActive": self._manual_control_active,
             "cameraReady": self.latest_frame() is not None,
-            "beds": summarize_beds(self._flowers),
-            "flowers": list(self._flowers.values()),
+            "camera": {
+                "current": self._selected_camera,
+                "armAvailable": arm_available,
+            },
+            "plants": list(self._plants.values()),
+            "beds": self._bed_payload(),
             "report": self._external_report or self._computed_report(),
             "map": self._map,
             "robotPose": self._robot_pose,
             "batteryPercent": self._battery_percent,
             "bedObservations": copy.deepcopy(self._bed_observations),
+            "mappingStatus": copy.deepcopy(self._mapping_status),
+            "taskMode": {
+                "available": self._service_ready(self._task_mode_client),
+                "current": self._task_status.get("current_state") if self._task_status else "",
+            },
+            "navigation": {"available": self._action_ready(self._behavior_client)},
+            "takeControl": {
+                "available": self._action_ready(self._behavior_client),
+                "message": (
+                    "Behavior TELEOP/IDLE backend available; no dedicated full motor stop backend found"
+                    if self._action_ready(self._behavior_client)
+                    else "Full motor/autonomy stop backend unavailable; UI STOP only sends zero velocity and disables UI commands"
+                ),
+            },
+            "arm": {
+                "poseBackendAvailable": self._service_ready(self._arm_pose_client),
+                "availablePoses": list(ARM_POSES),
+            },
+            "mapping": {
+                "startAvailable": self._service_ready(self._start_mapping_client),
+                "doneAvailable": bool(self._map),
+                "doneBackendAvailable": self._service_ready(self._done_mapping_client),
+                "saveSafeMapAvailable": self._service_ready(self._save_safe_map_client),
+            },
+            "artifactCandidates": copy.deepcopy(self._artifact_candidates),
+            "artifactCandidatesReceivedAt": self._artifact_candidates_received_at,
+            "artifactCandidatesParseError": self._artifact_candidates_parse_error,
             "teleop": sorted(self._active_controls),
         }
 
-    def set_teleop_command(self, payload) -> bool:
+    def toggle_safety(self, _payload) -> dict:
+        self._safety_paused = not self._safety_paused
+        self._active_controls = set()
+        self._publish_twist(0.0, 0.0, 0.0)
+        if self._safety_paused:
+            self._manual_control_active = False
+            self._send_behavior_request(BehaviorType.IDLE if BehaviorType is not None else None)
+        return {
+            "ok": True,
+            "paused": self._safety_paused,
+            "manualControlActive": self._manual_control_active,
+            "message": (
+                "Full motor/autonomy stop backend unavailable; UI STOP only sends zero velocity and disables UI commands"
+                if self._safety_paused and not self._action_ready(self._behavior_client)
+                else ("UI command pause active" if self._safety_paused else "UI safety state enabled; Take Control required before teleop")
+            ),
+        }
+
+    def set_teleop_command(self, payload) -> dict:
         if not isinstance(payload, dict):
-            return False
+            return {"accepted": False, "message": "Invalid teleop payload"}
         speed_mode = str(payload.get("speedMode", "normal")).strip().lower()
         if speed_mode not in SPEED_MODES:
             speed_mode = "normal"
@@ -1247,59 +1664,233 @@ class UiNode(Node):
                 "stop": set(),
             }
             if command not in legacy_controls:
-                return False
+                return {"accepted": False, "message": "Unknown teleop command"}
             controls = legacy_controls[command]
         if not isinstance(controls, (list, tuple, set)):
-            return False
-        allowed = {
-            "forward",
-            "backward",
-            "strafe-left",
-            "strafe-right",
-            "rotate-left",
-            "rotate-right",
-        }
+            return {"accepted": False, "message": "Invalid controls"}
+        allowed = {"forward", "backward", "strafe-left", "strafe-right", "rotate-left", "rotate-right"}
         active_controls = {str(control).strip().lower() for control in controls}
         if not active_controls.issubset(allowed):
-            return False
+            return {"accepted": False, "message": "Unknown control"}
+        if self._safety_paused or not self._manual_control_active:
+            active_controls = set()
         self._active_controls = active_controls
         self._speed_mode = speed_mode
         self._last_command_time = time.monotonic()
         self._publish_active_twist()
-        return True
+        return {"ok": True, "message": "Teleop command accepted"}
 
-    def inspect_bed(self, bed_id: str) -> bool:
-        bed_id = str(bed_id).strip().upper()[0:1]
-        if bed_id not in BED_IDS:
-            return False
-        msg = String()
-        msg.data = bed_id
-        self._inspect_bed_publisher.publish(msg)
-        self.get_logger().info(f"Inspect bed command sent: {bed_id}")
-        return True
+    def send_navigation_goal(self, payload) -> dict:
+        self._publish_twist(0.0, 0.0, 0.0)
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before navigation"}
+        if self._behavior_client is None or BehaviorType is None:
+            return {"ok": False, "message": "Navigation backend unavailable"}
+        if not self._behavior_client.server_is_ready():
+            return {"ok": False, "message": "Navigation backend unavailable"}
+        try:
+            x = float(payload["x"])
+            y = float(payload["y"])
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "message": "No valid map position selected"}
+        goal = ExecuteBehavior.Goal()
+        goal.behavior.type = BehaviorType.NAVIGATE
+        goal.target_pose.position.x = x
+        goal.target_pose.position.y = y
+        goal.target_pose.position.z = 0.0
+        goal.target_pose.orientation.w = 1.0
+        self._behavior_client.send_goal_async(goal)
+        return {"ok": True, "message": "Navigation goal sent to real behavior action"}
 
-    def _on_image(self, msg: Image) -> None:
+    def set_task_mode(self, payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before task mode commands"}
+        if self._task_mode_client is None:
+            return {"ok": False, "message": "Task mode backend unavailable"}
+        if not self._task_mode_client.service_is_ready():
+            return {"ok": False, "message": "Task mode backend unavailable"}
+        mode = TASK_MODE_TO_BACKEND.get(str(payload.get("mode", "")).strip().lower())
+        if not mode:
+            return {"ok": False, "message": "Unknown task mode"}
+        request = SetRobotMode.Request()
+        request.mode = mode
+        self._task_mode_client.call_async(request)
+        return {"ok": True, "message": f"Requested task mode {mode}"}
+
+    def take_control(self, _payload) -> dict:
+        self._active_controls = set()
+        self._publish_twist(0.0, 0.0, 0.0)
+        if self._safety_paused:
+            self._manual_control_active = False
+            return {
+                "ok": False,
+                "manualControlActive": False,
+                "message": "Press START before taking control",
+            }
+        if self._manual_control_active:
+            self._manual_control_active = False
+            self._send_behavior_request(BehaviorType.IDLE if BehaviorType is not None else None)
+            return {
+                "ok": True,
+                "manualControlActive": False,
+                "message": (
+                    "Released UI teleop control; requested behavior IDLE"
+                    if self._action_ready(self._behavior_client)
+                    else "Released UI teleop control; release-control backend unavailable"
+                ),
+            }
+        self._manual_control_active = True
+        self._send_behavior_request(BehaviorType.TELEOP if BehaviorType is not None else None)
+        return {
+            "ok": True,
+            "manualControlActive": True,
+            "message": (
+                "UI teleop control active; requested behavior TELEOP"
+                if self._action_ready(self._behavior_client)
+                else "UI-side teleop gating active; backend take-control interface unavailable"
+            ),
+        }
+
+    def select_camera(self, payload) -> dict:
+        camera = str(payload.get("camera", "base")).strip().lower()
+        if camera not in {"base", "arm"}:
+            return {"accepted": False, "message": "Unknown camera"}
+        if camera == "arm" and not (self._topics.get("armCameraRaw") or self._topics.get("armCameraCompressed")):
+            return {"accepted": False, "message": "Arm camera unavailable"}
+        self._selected_camera = camera
+        return {"ok": True, "message": f"{camera} camera selected"}
+
+    def send_arm_pose(self, payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before arm commands"}
+        if self._arm_pose_client is None:
+            return {"ok": False, "message": "Arm pose backend unavailable"}
+        if not self._arm_pose_client.service_is_ready():
+            return {"ok": False, "message": "Arm pose backend unavailable"}
+        pose = str(payload.get("pose", "")).strip().lower()
+        if pose not in ARM_POSES:
+            return {"ok": False, "message": "Unknown arm pose"}
+        request = SendNamedArmPose.Request()
+        request.pose_name = pose
+        self._arm_pose_client.call_async(request)
+        return {"ok": True, "message": f"Requested arm pose {pose}"}
+
+    def start_mapping(self, _payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before mapping commands"}
+        return self._call_trigger_service(
+            self._start_mapping_client,
+            "Start mapping service unavailable",
+            "Start mapping request sent",
+        )
+
+    def done_mapping(self, _payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before mapping commands"}
+        if self._map is None:
+            return {"ok": False, "message": "No map received yet"}
+        if not self._service_ready(self._done_mapping_client):
+            return {
+                "ok": True,
+                "message": "No finalize backend available; reviewing latest received map locally",
+            }
+        return self._call_trigger_service(
+            self._done_mapping_client,
+            "Finalize mapping service unavailable",
+            "Finalize mapping request sent",
+        )
+
+    def save_safe_map(self, payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before safe-map save"}
+        classifications = payload.get("classifications") if isinstance(payload, dict) else None
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        safe_map_review = payload.get("safeMapReview") if isinstance(payload, dict) else None
+        if not isinstance(classifications, dict):
+            classifications = {}
+        if not isinstance(candidates, list) or not candidates:
+            return {"ok": False, "message": "No artifact candidates received"}
+        if not isinstance(safe_map_review, dict):
+            safe_map_review = self._safe_map_review(candidates, classifications)
+        result = self._call_trigger_service(
+            self._save_safe_map_client,
+            "Save safe map backend unavailable",
+            "Safe map save request sent",
+        )
+        result["safeMapReview"] = safe_map_review
+        if result.get("ok"):
+            result["message"] = (
+                f"{result.get('message') or 'Safe map save request sent'}; "
+                f"kept {len(safe_map_review.get('objects', []))} objects, "
+                f"removed {len(safe_map_review.get('removed_false_scans', []))} false scans"
+            )
+        return result
+
+    def _safe_map_review(self, candidates: list, classifications: dict) -> dict:
+        objects = []
+        removed_false_scans = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_id = _clean_text(candidate.get("id"))
+            if not candidate_id:
+                continue
+            classification = _clean_text(classifications.get(candidate_id), "unclassified")
+            if classification not in {"wall", "bed", "obstacle", "false_scan"}:
+                classification = "unclassified"
+            if classification in {"unclassified", "false_scan"}:
+                removed_false_scans.append(candidate_id)
+                continue
+            objects.append(
+                {
+                    "id": candidate_id,
+                    "class": classification,
+                    "geometry_type": candidate.get("geometryType", "unknown"),
+                    "geometry": candidate.get("raw", {}).get("geometry", {}),
+                    "source": candidate.get("source", ""),
+                }
+            )
+        return {"objects": objects, "removed_false_scans": removed_false_scans}
+
+    def _call_trigger_service(self, client, unavailable_message: str, accepted_message: str) -> dict:
+        if not self._service_ready(client):
+            return {"ok": False, "message": unavailable_message}
+        future = client.call_async(Trigger.Request())
+        deadline = time.monotonic() + 3.0
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not future.done():
+            return {"ok": False, "message": f"{accepted_message}; waiting for backend response"}
+        try:
+            response = future.result()
+        except Exception as exc:
+            return {"ok": False, "message": f"{unavailable_message}: {exc}"}
+        return {
+            "ok": bool(response.success),
+            "message": response.message or accepted_message,
+        }
+
+    def _on_image(self, camera: str, msg: Image) -> None:
         if self._bridge is None or cv2 is None:
             return
-        if time.monotonic() - self._last_compressed_frame_time < 2.0:
+        if time.monotonic() - self._last_compressed_frame_time.get(camera, 0.0) < 2.0:
             return
         try:
             image = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             success, buffer = cv2.imencode(".jpg", image)
         except Exception as exc:
-            self.get_logger().warn(f"Could not encode camera frame: {exc}")
+            self.get_logger().warn(f"Could not encode {camera} camera frame: {exc}")
             return
         if success:
             with self._frame_lock:
-                self._latest_jpeg = buffer.tobytes()
+                self._frames[camera] = buffer.tobytes()
 
-    def _on_compressed_image(self, msg: CompressedImage) -> None:
-        if msg.format and "jpeg" not in msg.format.lower() and "jpg" not in msg.format.lower():
-            if cv2 is None:
-                return
+    def _on_compressed_image(self, camera: str, msg: CompressedImage) -> None:
+        if msg.format and "jpeg" not in msg.format.lower() and "jpg" not in msg.format.lower() and cv2 is None:
+            return
         with self._frame_lock:
-            self._latest_jpeg = bytes(msg.data)
-            self._last_compressed_frame_time = time.monotonic()
+            self._frames[camera] = bytes(msg.data)
+            self._last_compressed_frame_time[camera] = time.monotonic()
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         self._map = {
@@ -1311,23 +1902,59 @@ class UiNode(Node):
                 "y": msg.info.origin.position.y,
             },
             "data": list(msg.data),
+            "frameId": msg.header.frame_id,
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+
+    def _on_artifact_candidates(self, msg: String) -> None:
+        received_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self._artifact_candidates_parse_error = f"Could not parse artifact candidate JSON: {exc}"
+            self.get_logger().warn(self._artifact_candidates_parse_error)
+            return
+
+        if isinstance(payload, dict):
+            candidates = payload.get("candidates", [])
+        elif isinstance(payload, list):
+            candidates = payload
+        else:
+            self._artifact_candidates = []
+            self._artifact_candidates_received_at = received_at
+            self._artifact_candidates_parse_error = "Artifact candidate JSON must be an object with candidates or a list"
+            self.get_logger().warn(self._artifact_candidates_parse_error)
+            return
+
+        if not isinstance(candidates, list):
+            self._artifact_candidates = []
+            self._artifact_candidates_received_at = received_at
+            self._artifact_candidates_parse_error = "Artifact candidate payload field 'candidates' is not a list"
+            self.get_logger().warn(self._artifact_candidates_parse_error)
+            return
+
+        normalized_candidates = []
+        warnings = []
+        for index, candidate in enumerate(candidates):
+            normalized, warning = _normalize_artifact_candidate(candidate, index)
+            if normalized is not None:
+                normalized_candidates.append(normalized)
+            if warning:
+                warnings.append(warning)
+
+        self._artifact_candidates = normalized_candidates
+        self._artifact_candidates_received_at = received_at
+        self._artifact_candidates_parse_error = "; ".join(warnings)
+        if warnings:
+            self.get_logger().warn(f"Artifact candidate warnings: {'; '.join(warnings)}")
 
     def _on_odom(self, msg: Odometry) -> None:
         pose = msg.pose.pose
-        self._robot_pose = {
-            "x": pose.position.x,
-            "y": pose.position.y,
-            "yaw": yaw_from_quaternion(pose.orientation),
-        }
+        self._robot_pose = {"x": pose.position.x, "y": pose.position.y, "yaw": yaw_from_quaternion(pose.orientation)}
 
     def _on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         pose = msg.pose.pose
-        self._robot_pose = {
-            "x": pose.position.x,
-            "y": pose.position.y,
-            "yaw": yaw_from_quaternion(pose.orientation),
-        }
+        self._robot_pose = {"x": pose.position.x, "y": pose.position.y, "yaw": yaw_from_quaternion(pose.orientation)}
 
     def _on_plant_health(self, msg: String) -> None:
         try:
@@ -1335,129 +1962,79 @@ class UiNode(Node):
         except json.JSONDecodeError as exc:
             self.get_logger().warn(f"Ignoring invalid plant health JSON: {exc}")
             return
-
-        flower_id = str(payload.get("flower_id", "")).upper()
-        if flower_id:
-            self._update_flower_from_payload(flower_id, payload)
-            self._external_report = None
+        flower_id = str(payload.get("flower_id", "")).strip()
+        if not flower_id:
+            self.get_logger().warn("Ignoring plant health JSON without flower_id")
             return
-
-        bed_id = str(payload.get("bed_id", "")).upper()
-        if bed_id not in BED_IDS:
-            self.get_logger().warn(
-                f"Ignoring legacy plant health for unknown bed: {bed_id}"
-            )
-            return
-        for flower in self._flowers.values():
-            if flower.get("bed_id") != bed_id:
-                continue
-            for key in ("health", "growth_stage", "confidence", "last_scan_time", "notes"):
-                if key in payload:
-                    flower[key] = payload[key]
-            if "bug_detected" in payload:
-                flower["bug_detected"] = bool(payload["bug_detected"])
-            if "flower_detected" in payload:
-                flower["flower_detected"] = bool(payload["flower_detected"])
-            if "ready_for_harvest" in payload:
-                flower["ready_for_harvest"] = bool(payload["ready_for_harvest"])
-        self.get_logger().info(
-            f"Applied legacy bed-level plant health update to Bed {bed_id}"
-        )
+        self._update_plant_from_payload(flower_id, payload)
         self._external_report = None
 
     def _on_typed_plant_health(self, msg) -> None:
-        flower_id = str(msg.flower_id).upper()
+        flower_id = str(msg.flower_id).strip()
         if not flower_id:
-            flower_id = f"{str(msg.bed_id).upper() or 'A'}1"
-
+            self.get_logger().warn("Ignoring PlantHealth without flower_id")
+            return
         payload = {
             "flower_id": flower_id,
-            "bed_id": str(msg.bed_id).upper() or flower_id[0:1],
+            "bed_id": str(msg.bed_id).strip(),
             "height_cm": round(float(msg.height_cm), 1),
-            "color": msg.color or "unknown",
-            "health": msg.health or "unknown",
-            "growth_stage": msg.growth_stage or "unknown",
-            "bug_detected": bool(msg.bug_detected),
+            "color": msg.color,
+            "growth_stage": msg.growth_stage,
             "flower_detected": bool(msg.flower_detected),
             "ready_for_harvest": bool(msg.ready_for_harvest),
-            "confidence": float(msg.confidence),
             "last_scan_time": self._time_msg_to_iso(msg.last_scan_time),
             "notes": msg.notes,
+            "position": {"x": msg.position.x, "y": msg.position.y, "z": msg.position.z},
         }
-        self._update_flower_from_payload(flower_id, payload)
+        self._update_plant_from_payload(flower_id, payload)
         self._external_report = None
 
     def _on_bed_observation(self, msg) -> None:
         bed_id = str(msg.bed_id)
-        if msg.bed_id < 0:
-            bed_id = "none"
         self._bed_observations[bed_id] = {
             "bed_id": msg.bed_id,
-            "visible": bool(msg.visible),
-            "message": msg.message,
-            "tags": [
-                {
-                    "id": tag.id,
-                    "center_x": tag.center_px.x,
-                    "center_y": tag.center_px.y,
-                    "area": tag.area,
-                    "confidence": tag.confidence,
-                }
-                for tag in msg.tags
-            ],
+            "co2": None,
+            "humidity": None,
+            "bugs_detected": None,
+            "available": True,
             "last_seen": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _on_mapping_status(self, msg) -> None:
+        self._mapping_status = {
+            "scanSeen": bool(msg.scan_seen),
+            "odomSeen": bool(msg.odom_seen),
+            "mapSeen": bool(msg.map_seen),
+            "localized": bool(msg.localized),
+            "activeMap": msg.active_map,
+            "message": msg.message,
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _on_task_status(self, msg) -> None:
+        self._task_status = {
+            "current_state": msg.current_state,
+            "active": bool(msg.active),
+            "error": bool(msg.error),
+            "message": msg.message,
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
 
     def _time_msg_to_iso(self, msg) -> str:
         seconds = int(msg.sec)
         nanoseconds = int(msg.nanosec)
         if seconds <= 0 and nanoseconds <= 0:
-            return datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return datetime.fromtimestamp(
-            seconds + nanoseconds / 1_000_000_000.0,
-            tz=timezone.utc,
-        ).isoformat(timespec="seconds")
+            return ""
+        return datetime.fromtimestamp(seconds + nanoseconds / 1_000_000_000.0, tz=timezone.utc).isoformat(timespec="seconds")
 
-    def _update_flower_from_payload(self, flower_id: str, payload: dict) -> None:
-        bed_id = str(payload.get("bed_id", flower_id[0:1])).upper()
-        if bed_id not in BED_IDS:
-            self.get_logger().warn(f"Ignoring flower health for unknown bed: {bed_id}")
-            return
-        if flower_id not in self._flowers:
-            self._flowers[flower_id] = {
-                "flower_id": flower_id,
-                "bed_id": bed_id,
-                "height_cm": 0.0,
-                "color": "unknown",
-                "health": "unknown",
-                "growth_stage": "unknown",
-                "bug_detected": False,
-                "flower_detected": False,
-                "ready_for_harvest": False,
-                "confidence": 0.0,
-                "last_scan_time": "",
-                "notes": "",
-            }
-        flower = self._flowers[flower_id]
-        flower["bed_id"] = bed_id
-        for key in (
-            "height_cm",
-            "color",
-            "health",
-            "growth_stage",
-            "confidence",
-            "last_scan_time",
-            "notes",
-        ):
+    def _update_plant_from_payload(self, flower_id: str, payload: dict) -> None:
+        plant = self._plants.setdefault(flower_id, {"flower_id": flower_id})
+        for key in ("height_cm", "color", "growth_stage", "last_scan_time", "notes", "position"):
             if key in payload:
-                flower[key] = payload[key]
-        for key in ("bug_detected", "flower_detected", "ready_for_harvest"):
+                plant[key] = payload[key]
+        for key in ("flower_detected", "ready_for_harvest"):
             if key in payload:
-                flower[key] = bool(payload[key])
-        if not flower.get("last_scan_time"):
-            flower["last_scan_time"] = datetime.now(timezone.utc).isoformat(
-                timespec="seconds"
-            )
+                plant[key] = bool(payload[key])
 
     def _on_plant_health_report(self, msg: String) -> None:
         try:
@@ -1465,41 +2042,25 @@ class UiNode(Node):
         except json.JSONDecodeError:
             report = {"nextAction": msg.data}
         self._external_report = {
-            "totalBeds": report.get("totalBeds", report.get("total_beds", len(BED_IDS))),
-            "healthyBeds": report.get("healthyFlowers", report.get("healthy_flowers", 0)),
-            "riskBeds": report.get("riskFlowers", report.get("risk_flowers", 0)),
-            "readyBeds": report.get("readyFlowers", report.get("ready_flowers", 0)),
-            "totalFlowers": report.get("totalFlowers", report.get("total_flowers", 0)),
-            "averageHeightCm": report.get(
-                "averageHeightCm", report.get("average_height_cm", 0)
-            ),
+            "totalBeds": report.get("totalBeds", report.get("total_beds", len(self._bed_observations))),
+            "totalFlowers": report.get("totalFlowers", report.get("total_flowers", len(self._plants))),
             "lastScanTime": report.get("lastScanTime", report.get("last_scan_time", "")),
-            "nextAction": report.get("nextAction", report.get("next_action", "Review report")),
+            "nextAction": report.get("nextAction", report.get("next_action", "Real report received")),
         }
 
     def _on_battery(self, msg: BatteryState) -> None:
         if msg.percentage >= 0:
             self._battery_percent = max(0.0, min(100.0, float(msg.percentage) * 100.0))
 
-    def _on_legacy_flower_data(self, msg) -> None:
-        if not msg.detected:
-            return
-        flower = self._flowers["A1"]
-        flower["flower_detected"] = True
-        flower["confidence"] = max(
-            float(msg.confidence), float(flower.get("confidence", 0.0))
-        )
-        flower["notes"] = msg.message or "Legacy flower detector reported a flower"
-
     def _on_teleop_timer(self) -> None:
-        if (
-            self._active_controls
-            and time.monotonic() - self._last_command_time > 0.6
-        ):
+        if self._active_controls and time.monotonic() - self._last_command_time > 0.6:
             self._active_controls = set()
         self._publish_active_twist()
 
     def _publish_active_twist(self) -> None:
+        if self._safety_paused or not self._manual_control_active:
+            self._publish_twist(0.0, 0.0, 0.0)
+            return
         linear_x = 0.0
         linear_y = 0.0
         angular_z = 0.0
@@ -1532,60 +2093,26 @@ class UiNode(Node):
         twist.angular.z = max(-MAX_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, angular_z))
         self._cmd_vel_publisher.publish(twist)
 
-    def _on_dummy_timer(self) -> None:
-        if not self._config["dummyMode"]:
+    def _send_behavior_request(self, behavior_type) -> None:
+        if behavior_type is None or self._behavior_client is None:
             return
-        self._last_dummy_tick += 1
-        moving_flower = "A1" if self._last_dummy_tick % 2 else "C15"
-        self._flowers[moving_flower]["last_scan_time"] = datetime.now(
-            timezone.utc
-        ).isoformat(timespec="seconds")
-        self._flowers[moving_flower]["confidence"] = min(
-            0.99, float(self._flowers[moving_flower].get("confidence", 0.8)) + 0.01
-        )
-        self._battery_percent = max(20.0, float(self._battery_percent or 86.0) - 0.2)
-        self._robot_pose = {
-            "x": 1.5 + math.sin(self._last_dummy_tick / 3.0) * 0.5,
-            "y": 1.0 + math.cos(self._last_dummy_tick / 3.0) * 0.3,
-            "yaw": self._last_dummy_tick / 8.0,
-        }
+        if not self._behavior_client.server_is_ready():
+            return
+        goal = ExecuteBehavior.Goal()
+        goal.behavior.type = behavior_type
+        self._behavior_client.send_goal_async(goal)
+
+    def _bed_payload(self) -> list[dict]:
+        return sorted(copy.deepcopy(list(self._bed_observations.values())), key=lambda bed: str(bed.get("bed_id", "")))
 
     def _computed_report(self) -> dict:
-        flowers = list(self._flowers.values())
-        healthy = sum(1 for flower in flowers if flower.get("health") == "healthy")
-        risk = sum(
-            1 for flower in flowers if flower.get("health") in {"warning", "critical"}
-        )
-        ready = sum(1 for flower in flowers if flower.get("ready_for_harvest"))
-        total = len(flowers)
-        average_height = 0.0
-        if total:
-            average_height = sum(
-                float(flower.get("height_cm") or 0.0) for flower in flowers
-            ) / total
-        last_scan = max((flower.get("last_scan_time", "") for flower in flowers), default="")
-        priority = next((flower for flower in flowers if flower.get("health") == "critical"), None)
-        if priority is None:
-            priority = next((flower for flower in flowers if flower.get("health") == "warning"), None)
-        if priority is None:
-            priority = next((flower for flower in flowers if flower.get("ready_for_harvest")), None)
-        if priority:
-            if priority.get("health") in {"critical", "warning"}:
-                reason = priority["health"]
-            else:
-                reason = "ready for harvest"
-            action = f"Inspect flower {priority['flower_id']} in Bed {priority['bed_id']} for {reason}"
-        else:
-            action = "No urgent action required."
+        plants = list(self._plants.values())
+        last_scan = max((plant.get("last_scan_time", "") for plant in plants), default="")
         return {
-            "totalBeds": len(BED_IDS),
-            "healthyBeds": healthy,
-            "riskBeds": risk,
-            "readyBeds": ready,
-            "totalFlowers": total,
-            "averageHeightCm": round(average_height, 1),
+            "totalBeds": len(self._bed_observations),
+            "totalFlowers": len(plants),
             "lastScanTime": last_scan,
-            "nextAction": action,
+            "nextAction": "Waiting for real data" if not plants and not self._bed_observations else "Real records received",
         }
 
 

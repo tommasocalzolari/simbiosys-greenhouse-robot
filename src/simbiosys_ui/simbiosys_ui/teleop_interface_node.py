@@ -3,7 +3,7 @@ from rclpy.node import Node
 
 
 class TeleopInterfaceNode(Node):
-    """Placeholder teleoperation interface node."""
+    """Teleoperation interface extension point."""
 
     def __init__(self) -> None:
         super().__init__("teleop_interface_node")
@@ -11,7 +11,7 @@ class TeleopInterfaceNode(Node):
 
         # TODO: Connect operator commands to safe high-level teleop hooks.
         # TODO: Avoid bypassing robot-side safety and low-level controllers.
-        self.get_logger().info("Teleop interface placeholder started")
+        self.get_logger().info("Teleop interface extension point started")
 
     def _on_timer(self) -> None:
         self.get_logger().info("Waiting for teleop interface implementation")
