@@ -1,4 +1,5 @@
 from setuptools import find_packages, setup
+from glob import glob
 
 package_name = "simbiosys_arm"
 
@@ -9,6 +10,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -21,6 +23,8 @@ setup(
         "console_scripts": [
             "named_joint_pose_node = simbiosys_arm.named_joint_pose_node:main",
             "gripper_client_node = simbiosys_arm.gripper_client_node:main",
+            "flower_pick_node = simbiosys_arm.flower_pick_node:main",
+            "moveit_joint_state_adapter_node = simbiosys_arm.moveit_joint_state_adapter_node:main",
         ],
     },
 )

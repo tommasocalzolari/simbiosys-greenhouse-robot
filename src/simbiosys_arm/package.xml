@@ -11,6 +11,11 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>control_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>shape_msgs</exec_depend>
   <exec_depend>simbiosys_interfaces</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>trajectory_msgs</exec_depend>

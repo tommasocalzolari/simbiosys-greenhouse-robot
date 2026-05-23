@@ -1,4 +1,5 @@
 import rclpy
+from math import pi
 from rclpy.node import Node
 from simbiosys_interfaces.srv import SendNamedArmPose
 from std_srvs.srv import SetBool
@@ -11,6 +12,8 @@ JOINT_NAMES = [
     "elbow_joint",
     "wrist_joint",
 ]
+
+JOINT_LIMIT = pi / 2.0
 
 SAFE_PLACEHOLDER_POSES = {
     "home": [0.0, 0.0, 0.0, 0.0],
@@ -92,7 +95,10 @@ class NamedJointPoseNode(Node):
             return response
 
         point = JointTrajectoryPoint()
-        point.positions = SAFE_PLACEHOLDER_POSES[pose_name]
+        point.positions = [
+            max(-JOINT_LIMIT, min(JOINT_LIMIT, position))
+            for position in SAFE_PLACEHOLDER_POSES[pose_name]
+        ]
         point.time_from_start.sec = int(self._motion_duration_sec)
         point.time_from_start.nanosec = int(
             (self._motion_duration_sec - int(self._motion_duration_sec)) * 1e9
