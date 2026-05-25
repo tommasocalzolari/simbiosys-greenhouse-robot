@@ -58,6 +58,12 @@ class PlantAnalysisNode(Node):
             10,
         )
         self.create_subscription(
+            Bool,
+            "/simbiosys/bug_detected",
+            self._on_bug_detected,
+            10,
+        )
+        self.create_subscription(
             Int32,
             "/simbiosys/current_bed_id",
             self._on_current_bed_id,
@@ -71,12 +77,11 @@ class PlantAnalysisNode(Node):
         )
         self._latest_flower_data: FlowerData | None = None
         self._current_bed_id = -1
+        self._bug_detected = False
+        self._bed_flower_counts: dict[int, dict[str, int]] = {}
+        self._bed_tracked_flowers: dict[int, list[TrackedFlower]] = {}
         self._tracked_flowers: list[TrackedFlower] = []
-        self._flower_counts = {
-            "magenta": 0,
-            "light_pink": 0,
-            "white": 0,
-        }
+        self._flower_counts = self._empty_flower_counts()
         self._timer = self.create_timer(5.0, self._on_timer)
         self.declare_parameter("default_bed_id", "A")
         self.declare_parameter("default_flower_id", "A1")
@@ -86,7 +91,7 @@ class PlantAnalysisNode(Node):
             self._publish_flower_counts,
         )
 
-        # TODO: Add bug detection and maturity estimation.
+        # TODO: Add maturity estimation.
         self.get_logger().info("Plant analysis placeholder started")
 
     def _on_flower_data(self, msg: FlowerData) -> None:
@@ -144,20 +149,59 @@ class PlantAnalysisNode(Node):
 
     def _on_reset_counter(self, msg: Bool) -> None:
         if msg.data:
-            self._tracked_flowers.clear()
-            for color in self._flower_counts:
-                self._flower_counts[color] = 0
-            self.get_logger().info("Reset flower counters")
+            self._tracked_flowers = []
+            self._flower_counts = self._empty_flower_counts()
+            self._save_current_bed_state()
+            self.get_logger().info(
+                f"Reset flower counters for bed {self._current_bed_id}"
+            )
+
+    def _on_bug_detected(self, msg: Bool) -> None:
+        self._bug_detected = bool(msg.data)
 
     def _on_current_bed_id(self, msg: Int32) -> None:
-        self._current_bed_id = msg.data
+        self._set_current_bed_id(msg.data)
 
     def _on_bed_observation(self, msg: BedObservation) -> None:
-        self._current_bed_id = msg.bed_id
+        self._set_current_bed_id(msg.bed_id)
+
+    def _set_current_bed_id(self, bed_id: int) -> None:
+        if bed_id == self._current_bed_id:
+            return
+
+        old_bed_id = self._current_bed_id
+        self._save_current_bed_state()
+        self._current_bed_id = bed_id
+        self._load_current_bed_state()
+        self.get_logger().info(
+            f"Switched flower counters from bed {old_bed_id} to bed {bed_id}"
+        )
+
+    def _save_current_bed_state(self) -> None:
+        self._bed_flower_counts[self._current_bed_id] = dict(self._flower_counts)
+        self._bed_tracked_flowers[self._current_bed_id] = list(self._tracked_flowers)
+
+    def _load_current_bed_state(self) -> None:
+        self._flower_counts = dict(
+            self._bed_flower_counts.get(
+                self._current_bed_id,
+                self._empty_flower_counts(),
+            )
+        )
+        self._tracked_flowers = list(
+            self._bed_tracked_flowers.get(self._current_bed_id, [])
+        )
+
+    def _empty_flower_counts(self) -> dict[str, int]:
+        return {
+            "magenta": 0,
+            "light_pink": 0,
+            "white": 0,
+        }
 
     def _on_timer(self) -> None:
         analysis = PlantAnalysis()
-        analysis.bugs_detected = False
+        analysis.bugs_detected = self._bug_detected
         analysis.fully_grown = False
 
         if self._latest_flower_data is None:
