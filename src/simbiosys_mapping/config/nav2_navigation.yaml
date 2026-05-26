@@ -7,6 +7,7 @@ bt_navigator:
     bt_loop_duration: 10
     default_server_timeout: 20
     wait_for_service_timeout: 1000
+    default_nav_to_pose_bt_xml: nav2_tight_space_backup_bt_deadband.xml
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -68,63 +69,73 @@ controller_server:
   ros__parameters:
     use_sim_time: false
     odom_topic: /mirte_base_controller/odom
-    controller_frequency: 10.0
+    controller_frequency: 15.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    failure_tolerance: 0.5
     progress_checker_plugin: progress_checker
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
 
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
-      required_movement_radius: 0.2
-      movement_time_allowance: 15.0
+      required_movement_radius: 0.03
+      movement_time_allowance: 18.0
 
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.15
-      yaw_goal_tolerance: 0.20
+      xy_goal_tolerance: 0.18 # still relaxed, but slightly more precise
+      yaw_goal_tolerance: 0.18 # less permissive theta/yaw error at the final goal
+
       stateful: true
 
     FollowPath:
-      plugin: dwb_core::DWBLocalPlanner
+      plugin: nav2_rotation_shim_controller::RotationShimController
+      primary_controller: dwb_core::DWBLocalPlanner
+      # Rotate in place to align with the first part of the global path before driving.
+      angular_dist_threshold: 0.2       # rad; align to path already from ~14 deg heading error
+      angular_disengage_threshold: 0.06  #makes the robot rotate until heading error is small
+      forward_sampling_distance: 0.25    # m; look only a short distance ahead in this small map
+      rotate_to_heading_angular_vel: 0.55 # rad/s; above the observed ~0.40 rad/s angular deadband
+      max_angular_accel: 1.3
+      simulate_ahead_time: 0.6
+      rotate_to_goal_heading: true
       debug_trajectory_details: false
-      min_vel_x: 0.0
+      min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
       min_vel_y: 0.0
-      max_vel_x: 0.20
+      max_vel_x: 0.26          # must be above the observed ~0.20 m/s linear deadband
       max_vel_y: 0.0
-      max_vel_theta: 0.60
+      max_vel_theta: 0.8      # allow stronger turns in tight spaces
       min_speed_xy: 0.0
-      max_speed_xy: 0.20
-      min_speed_theta: 0.0
-      acc_lim_x: 0.5
+      max_speed_xy: 0.24       # above linear deadband but still slow for a small map
+      min_speed_theta: 0.40     # observed minimum angular command needed to actually rotate
+      acc_lim_x: 0.4          #0.5  
       acc_lim_y: 0.0
-      acc_lim_theta: 1.0
-      decel_lim_x: -0.5
+      acc_lim_theta: 1.3       # stronger angular acceleration for initial turns/corners
+      decel_lim_x: -0.35        # allow braking/recovery without being too abrupt
       decel_lim_y: 0.0
-      decel_lim_theta: -1.0
-      vx_samples: 20
+      decel_lim_theta: -1.0     # stronger angular deceleration for corners
+      vx_samples: 12
       vy_samples: 1
-      vtheta_samples: 20
-      sim_time: 1.5
+      vtheta_samples: 32
+      sim_time: 0.6
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.15
-      trans_stopped_velocity: 0.05
+      xy_goal_tolerance: 0.18
+      trans_stopped_velocity: 0.08
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.02
-      PathAlign.scale: 32.0
+      BaseObstacle.scale: 0.06
+      PathAlign.scale: 12.0
       PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 24.0
+      GoalAlign.scale: 10.0
       GoalAlign.forward_point_distance: 0.1
-      PathDist.scale: 32.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
+      PathDist.scale: 14.0
+      GoalDist.scale: 12.0
+      RotateToGoal.scale: 12.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
 
@@ -132,7 +143,7 @@ local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 5.0
+      update_frequency: 8.0
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
@@ -140,7 +151,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.22
+      robot_radius: 0.17  # slightly optimistic for tight spaces; increase if it clips obstacles too often
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -151,15 +162,15 @@ local_costmap:
           data_type: LaserScan
           marking: true
           clearing: true
-          obstacle_min_range: 0.20
+          obstacle_min_range: 0.10
           obstacle_max_range: 2.5
-          raytrace_min_range: 0.20
+          raytrace_min_range: 0.10
           raytrace_max_range: 3.0
           max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.30
-        cost_scaling_factor: 4.0
+        inflation_radius: 0.13
+        cost_scaling_factor: 7.0
       always_send_full_costmap: true
 
 global_costmap:
@@ -171,30 +182,16 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       resolution: 0.05
-      robot_radius: 0.22
+      robot_radius: 0.20  # 0.17
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "inflation_layer"]
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true
-      obstacle_layer:
-        plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: true
-        observation_sources: scan
-        scan:
-          topic: /scan
-          data_type: LaserScan
-          marking: true
-          clearing: true
-          obstacle_min_range: 0.20
-          obstacle_max_range: 2.5
-          raytrace_min_range: 0.20
-          raytrace_max_range: 3.0
-          max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         inflation_radius: 0.30
-        cost_scaling_factor: 4.0
+        cost_scaling_factor: 3.0
       always_send_full_costmap: true
 
 planner_server:
@@ -203,10 +200,22 @@ planner_server:
     expected_planner_frequency: 5.0
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: nav2_navfn_planner/NavfnPlanner
+      plugin: nav2_smac_planner/SmacPlanner2D
       tolerance: 0.25
-      use_astar: true
+      downsample_costmap: false
+      downsampling_factor: 1
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 5.0 #3.2
+      use_final_approach_orientation: false
+      smoother:
+        tolerance: 1.0e-10
+        max_iterations: 1000
+        w_data: 0.10
+        w_smooth: 0.55
+        do_refinement: true
 
 behavior_server:
   ros__parameters:
@@ -218,9 +227,9 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.2
     simulate_ahead_time: 1.0
-    max_rotational_vel: 0.60
-    min_rotational_vel: 0.20
-    rotational_acc_lim: 1.0
+    max_rotational_vel: 1.00
+    min_rotational_vel: 0.40
+    rotational_acc_lim: 2.0
     behavior_plugins: ["spin", "backup", "wait"]
     spin:
       plugin: nav2_behaviors/Spin
