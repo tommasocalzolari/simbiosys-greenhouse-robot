@@ -27,7 +27,7 @@ Real mapping artifact candidate interface not implemented yet.
 - The live map panel subscribes to the configured `liveMap` topic.
 - The UI renders real `nav_msgs/msg/OccupancyGrid` messages with occupied,
   free, and unknown cells.
-- Rendering is throttled by `mapUpdatePeriodSec`, currently 20 seconds.
+- Rendering and status payload map transfer are throttled by `mapUpdatePeriodSec`, currently 10 seconds.
 - The Teleop / Camera SLAM map draws the robot marker from real odometry or
   AMCL pose when available.
 - The Dashboard map allows selecting a real map position but does not draw the
