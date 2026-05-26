@@ -44,6 +44,9 @@ The strafe node publishes:
 The strafe node also subscribes to `/scan` directly to prevent sideways motion
 into a close side wall or inner corner.
 
+Velocity command publishing uses queue depth `1` by default, so old movement
+commands are dropped instead of being buffered.
+
 ## Alignment Node
 
 Run:
@@ -72,6 +75,9 @@ It filters lidar points by range:
 0.15m to 4.0m
 ```
 
+The default `scan_angle_offset_deg` is `90.0`, matching the current real robot
+lidar orientation. If you run in simulation, override it to `0.0` on both nodes.
+
 Then it publishes:
 
 - `valid`: whether a usable line was found.
@@ -97,19 +103,19 @@ ros2 run simbiosys_perception bed_side_alignment_node --ros-args \
 
 ## Strafe Test Node
 
-Run without motion:
+Run with motion enabled by default:
 
 ```bash
 source install/setup.bash
 ros2 run simbiosys_perception alignment_strafe_test_node
 ```
 
-Run with motion enabled:
+Run without motion:
 
 ```bash
 source install/setup.bash
 ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
-  -p enable_motion:=true
+  -p enable_motion:=false
 ```
 
 Common simulation command:
@@ -117,15 +123,46 @@ Common simulation command:
 ```bash
 source install/setup.bash
 ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
-  -p enable_motion:=true \
   -p cmd_vel_topic:=/mirte_base_controller/cmd_vel_unstamped \
-  -p strafe_direction:=left
+  -p scan_angle_offset_deg:=0.0
+```
+
+Real robot command:
+
+```bash
+source install/setup.bash
+ros2 run simbiosys_perception alignment_strafe_test_node
+```
+
+## Sequential Strafe Test Node
+
+There is also a stricter copied test node:
+
+```bash
+source install/setup.bash
+ros2 run simbiosys_perception sequential_alignment_strafe_test_node
+```
+
+It uses the same parameters and topics as `alignment_strafe_test_node`, but the
+motion logic is mutually exclusive:
+
+- outside the strafe gates, it only aligns with `linear.x` and `angular.z`
+- inside the strafe gates, it only strafes with `linear.y`
+
+This means it does not strafe while aligning, and it does not keep correcting
+distance/yaw once it starts strafing.
+
+Real robot example:
+
+```bash
+source install/setup.bash
+ros2 run simbiosys_perception sequential_alignment_strafe_test_node
 ```
 
 Watch commands:
 
 ```bash
-ros2 topic echo /mirte_base_controller/cmd_vel_unstamped
+ros2 topic echo /mirte_base_controller/cmd_vel
 ```
 
 Stop other velocity publishers, such as `teleop_twist_keyboard`, before testing.
@@ -135,6 +172,10 @@ other.
 ## Behavior
 
 The strafe node prioritizes alignment before sideways motion.
+
+The regular `alignment_strafe_test_node` can keep correcting distance and yaw
+while it strafes. The `sequential_alignment_strafe_test_node` does not mix those
+motions.
 
 It only allows `linear.y` strafing when:
 
@@ -153,7 +194,7 @@ Default strafe gates:
 
 ```text
 strafe_distance_tolerance_m: 0.10
-strafe_yaw_tolerance_rad: 10 degrees
+strafe_yaw_tolerance_rad: 5 degrees
 ```
 
 Default correction deadbands:
@@ -166,14 +207,23 @@ yaw_tolerance_rad: 1 degree
 Default side clearance:
 
 ```text
-min_side_clearance_m: 0.30
-left strafe sector: 45 to 135 degrees
-right strafe sector: -135 to -45 degrees
+min_side_clearance_m: 1.00
+side_clearance_ignore_below_m: 0.02
+invert_side_clearance_side: false
+left strafe sector: 70 to 110 degrees
+right strafe sector: -110 to -70 degrees
 ```
 
 If the robot is strafing left and the left lidar sector sees something closer
-than `0.30m`, the node stops sideways movement. It still keeps alignment
+than `min_side_clearance_m`, the node stops sideways movement. It still keeps alignment
 corrections active.
+
+Default queue depths:
+
+```text
+cmd_vel_queue_depth: 1
+input_queue_depth: 1
+```
 
 ## Useful Tuning
 
@@ -181,7 +231,6 @@ Strafe speed:
 
 ```bash
 ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
-  -p enable_motion:=true \
   -p strafe_speed_mps:=0.20
 ```
 
@@ -189,7 +238,6 @@ Yaw correction:
 
 ```bash
 ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
-  -p enable_motion:=true \
   -p yaw_gain:=1.4
 ```
 
@@ -197,7 +245,6 @@ Maximum angular speed:
 
 ```bash
 ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
-  -p enable_motion:=true \
   -p max_angular_speed_radps:=1.2
 ```
 
@@ -205,8 +252,22 @@ Side clearance:
 
 ```bash
 ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
-  -p enable_motion:=true \
   -p min_side_clearance_m:=0.40
+```
+
+If the robot is strafing left but the clearance guard appears to watch the right
+side, flip the clearance sector:
+
+```bash
+ros2 run simbiosys_perception alignment_strafe_test_node --ros-args \
+  -p invert_side_clearance_side:=true
+```
+
+Scan angle offset:
+
+```bash
+ros2 run simbiosys_perception bed_side_alignment_node --ros-args \
+  -p scan_angle_offset_deg:=0.0
 ```
 
 Strafe direction:
@@ -247,7 +308,7 @@ points in the selected region or range window.
 
 If the robot does not strafe, check:
 
-- `enable_motion` is `true`.
+- `enable_motion` has not been set to `false`.
 - `/simbiosys/bed_side_alignment` has `valid: true`.
 - confidence is above `min_confidence`.
 - distance/yaw are within the strafe gates.

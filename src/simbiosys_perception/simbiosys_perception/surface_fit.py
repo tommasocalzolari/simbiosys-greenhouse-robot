@@ -41,12 +41,13 @@ def scan_ranges_to_points(
     max_range_m: float,
     roi_min_angle_rad: float,
     roi_max_angle_rad: float,
+    angle_offset_rad: float = 0.0,
 ) -> list[Point2D]:
     points: list[Point2D] = []
     for index, range_m in enumerate(ranges):
         if not math.isfinite(range_m) or range_m < min_range_m or range_m > max_range_m:
             continue
-        angle = angle_min + index * angle_increment
+        angle = angle_min + index * angle_increment + angle_offset_rad
         if angle < roi_min_angle_rad or angle > roi_max_angle_rad:
             continue
         points.append(Point2D(range_m * math.cos(angle), range_m * math.sin(angle)))
