@@ -5,7 +5,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge, CvBridgeError
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Bool, Int32, String
 
 
@@ -23,6 +23,7 @@ class BugDetectionNode(Node):
     def __init__(self) -> None:
         super().__init__("bug_detection_node")
         self.declare_parameter("camera_topic", "/gripper_camera/image_raw")
+        self.declare_parameter("use_compressed", True)
         self.declare_parameter("min_tag_area", 300.0)
         self.declare_parameter("max_tag_area", 50000.0)
         self.declare_parameter("dark_pixel_ratio", 0.15)
@@ -31,6 +32,12 @@ class BugDetectionNode(Node):
         self._camera_topic = (
             self.get_parameter("camera_topic").get_parameter_value().string_value
         )
+        self._use_compressed = (
+            self.get_parameter("use_compressed").get_parameter_value().bool_value
+        )
+        self._subscribed_camera_topic = self._camera_topic
+        if self._use_compressed:
+            self._subscribed_camera_topic = f"{self._camera_topic}/compressed"
         self._min_tag_area = (
             self.get_parameter("min_tag_area").get_parameter_value().double_value
         )
@@ -64,9 +71,10 @@ class BugDetectionNode(Node):
             "/simbiosys/bug_debug",
             10,
         )
+        image_msg_type = CompressedImage if self._use_compressed else Image
         self._image_subscription = self.create_subscription(
-            Image,
-            self._camera_topic,
+            image_msg_type,
+            self._subscribed_camera_topic,
             self._on_image,
             10,
         )
@@ -78,7 +86,7 @@ class BugDetectionNode(Node):
         )
 
         self.get_logger().info(
-            f"Bug detection listening on {self._camera_topic}, "
+            f"Bug detection listening on {self._subscribed_camera_topic}, "
             "publishing /simbiosys/bug_detected, /simbiosys/bug_count, "
             "and /simbiosys/bug_debug"
         )
@@ -86,15 +94,30 @@ class BugDetectionNode(Node):
     def _on_current_bed_id(self, msg: Int32) -> None:
         self._current_bed_id = msg.data
 
-    def _on_image(self, image_msg: Image) -> None:
-        try:
-            frame = self._bridge.imgmsg_to_cv2(image_msg, desired_encoding="bgr8")
-        except CvBridgeError as exc:
-            self.get_logger().warning(f"Could not convert camera image: {exc}")
+    def _on_image(self, image_msg: Image | CompressedImage) -> None:
+        frame = self._image_msg_to_frame(image_msg)
+        if frame is None:
             return
 
         detections = self._detect_bugs(frame)
         self._publish_results(len(detections))
+
+    def _image_msg_to_frame(
+        self,
+        image_msg: Image | CompressedImage,
+    ) -> np.ndarray | None:
+        if self._use_compressed:
+            image_buffer = np.frombuffer(image_msg.data, np.uint8)
+            frame = cv2.imdecode(image_buffer, cv2.IMREAD_COLOR)
+            if frame is None:
+                self.get_logger().warning("Could not decode compressed camera image")
+            return frame
+
+        try:
+            return self._bridge.imgmsg_to_cv2(image_msg, desired_encoding="bgr8")
+        except CvBridgeError as exc:
+            self.get_logger().warning(f"Could not convert camera image: {exc}")
+            return None
 
     def _detect_bugs(self, frame: np.ndarray) -> list[BugCandidate]:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)

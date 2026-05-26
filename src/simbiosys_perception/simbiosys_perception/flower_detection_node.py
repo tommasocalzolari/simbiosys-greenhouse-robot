@@ -4,7 +4,7 @@ import rclpy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 import cv2
 import numpy as np
@@ -25,6 +25,7 @@ class FlowerDetectionNode(Node):
     def __init__(self) -> None:
         super().__init__("flower_detection_node")
         self.declare_parameter("image_topic", "/camera/color/image_raw")
+        self.declare_parameter("use_compressed", True)
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
         self.declare_parameter("depth_camera_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
@@ -46,6 +47,12 @@ class FlowerDetectionNode(Node):
         self._image_topic = (
             self.get_parameter("image_topic").get_parameter_value().string_value
         )
+        self._use_compressed = (
+            self.get_parameter("use_compressed").get_parameter_value().bool_value
+        )
+        self._subscribed_image_topic = self._image_topic
+        if self._use_compressed:
+            self._subscribed_image_topic = f"{self._image_topic}/compressed"
         self._depth_topic = (
             self.get_parameter("depth_topic").get_parameter_value().string_value
         )
@@ -93,9 +100,10 @@ class FlowerDetectionNode(Node):
             "/simbiosys/flower_debug_image",
             10,
         )
+        image_msg_type = CompressedImage if self._use_compressed else Image
         self._image_subscription = self.create_subscription(
-            Image,
-            self._image_topic,
+            image_msg_type,
+            self._subscribed_image_topic,
             self._on_image,
             10,
         )
@@ -113,7 +121,7 @@ class FlowerDetectionNode(Node):
         )
 
         self.get_logger().info(
-            f"Flower detection listening on color={self._image_topic}, "
+            f"Flower detection listening on color={self._subscribed_image_topic}, "
             f"depth={self._depth_topic}, publishing {output_topic}"
         )
         self.get_logger().info(
@@ -143,11 +151,9 @@ class FlowerDetectionNode(Node):
             depth_msg.encoding,
         )
 
-    def _on_image(self, image_msg: Image) -> None:
-        try:
-            frame = self._bridge.imgmsg_to_cv2(image_msg, desired_encoding="bgr8")
-        except CvBridgeError as exc:
-            self.get_logger().warning(f"Could not convert camera image: {exc}")
+    def _on_image(self, image_msg: Image | CompressedImage) -> None:
+        frame = self._image_msg_to_frame(image_msg)
+        if frame is None:
             return
 
         detection = self._detect_flower(frame)
@@ -155,6 +161,23 @@ class FlowerDetectionNode(Node):
         msg = self._build_message(detection, height_cm, frame.shape)
         self._publisher.publish(msg)
         self._publish_debug_image(frame, detection, height_cm, image_msg)
+
+    def _image_msg_to_frame(
+        self,
+        image_msg: Image | CompressedImage,
+    ) -> np.ndarray | None:
+        if self._use_compressed:
+            image_buffer = np.frombuffer(image_msg.data, np.uint8)
+            frame = cv2.imdecode(image_buffer, cv2.IMREAD_COLOR)
+            if frame is None:
+                self.get_logger().warning("Could not decode compressed camera image")
+            return frame
+
+        try:
+            return self._bridge.imgmsg_to_cv2(image_msg, desired_encoding="bgr8")
+        except CvBridgeError as exc:
+            self.get_logger().warning(f"Could not convert camera image: {exc}")
+            return None
 
     def _detect_flower(self, frame: np.ndarray) -> FlowerDetection | None:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -372,7 +395,7 @@ class FlowerDetectionNode(Node):
         frame: np.ndarray,
         detection: FlowerDetection | None,
         height_cm: float | None,
-        source_msg: Image,
+        source_msg: Image | CompressedImage,
     ) -> None:
         debug_frame = frame.copy()
         if detection is not None:
