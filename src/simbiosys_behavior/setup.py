@@ -21,6 +21,7 @@ setup(
         "console_scripts": [
             "bed_side_controller_node = simbiosys_behavior.bed_side_controller_node:main",
             "mission_manager_node = simbiosys_behavior.mission_manager_node:main",
+            "operator_led_node = simbiosys_behavior.operator_led_node:main",
         ],
     },
 )

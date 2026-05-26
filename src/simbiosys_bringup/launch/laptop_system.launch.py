@@ -23,6 +23,24 @@ def generate_launch_description():
     gripper_max_effort = LaunchConfiguration("gripper_max_effort")
     motion_duration_sec = LaunchConfiguration("motion_duration_sec")
     bed_side_enable_motion = LaunchConfiguration("bed_side_enable_motion")
+    operator_led_enabled = LaunchConfiguration("operator_led_enabled")
+    operator_led_single_service_name = LaunchConfiguration(
+        "operator_led_single_service_name"
+    )
+    operator_led_brightness = LaunchConfiguration("operator_led_brightness")
+    operator_led_turn_angular_threshold = LaunchConfiguration(
+        "operator_led_turn_angular_threshold"
+    )
+    operator_led_strafe_linear_y_threshold = LaunchConfiguration(
+        "operator_led_strafe_linear_y_threshold"
+    )
+    operator_led_reverse_led_order = LaunchConfiguration("operator_led_reverse_led_order")
+    operator_led_invert_turn_direction = LaunchConfiguration(
+        "operator_led_invert_turn_direction"
+    )
+    operator_led_invert_strafe_direction = LaunchConfiguration(
+        "operator_led_invert_strafe_direction"
+    )
 
     return LaunchDescription(
         [
@@ -38,6 +56,46 @@ def generate_launch_description():
                     "Enable physical cmd_vel output from the bed-side controller. "
                     "Keep false until perception alignment and robot safety are validated."
                 ),
+            ),
+            DeclareLaunchArgument(
+                "operator_led_enabled",
+                default_value="true",
+                description="Enable MIRTE Neopixel operator status feedback.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_single_service_name",
+                default_value="/io/leds/leds/set_color_single",
+                description="MIRTE Neopixel single-LED service used for operator feedback.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_brightness",
+                default_value="0.35",
+                description="Brightness scale for operator LED colors in the range 0.0-1.0.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_turn_angular_threshold",
+                default_value="0.15",
+                description="Minimum absolute cmd_vel angular.z for turn blinkers.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_strafe_linear_y_threshold",
+                default_value="0.03",
+                description="Minimum absolute cmd_vel linear.y for strafe blinkers.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_reverse_led_order",
+                default_value="false",
+                description="Reverse LED strip indexing when the physical strip is mounted opposite.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_invert_turn_direction",
+                default_value="false",
+                description="Swap left/right turn blinkers for cmd_vel angular.z.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_invert_strafe_direction",
+                default_value="false",
+                description="Swap left/right strafe blinkers for cmd_vel linear.y.",
             ),
             DeclareLaunchArgument(
                 "image_topic",
@@ -109,6 +167,25 @@ def generate_launch_description():
                     {
                         "cmd_vel_topic": cmd_vel_topic,
                         "enable_motion": bed_side_enable_motion,
+                    }
+                ],
+            ),
+            Node(
+                package="simbiosys_behavior",
+                executable="operator_led_node",
+                name="operator_led_node",
+                output="screen",
+                parameters=[
+                    {
+                        "enabled": operator_led_enabled,
+                        "set_single_service_name": operator_led_single_service_name,
+                        "cmd_vel_topic": cmd_vel_topic,
+                        "brightness": operator_led_brightness,
+                        "turn_angular_threshold": operator_led_turn_angular_threshold,
+                        "strafe_linear_y_threshold": operator_led_strafe_linear_y_threshold,
+                        "reverse_led_order": operator_led_reverse_led_order,
+                        "invert_turn_direction": operator_led_invert_turn_direction,
+                        "invert_strafe_direction": operator_led_invert_strafe_direction,
                     }
                 ],
             ),
