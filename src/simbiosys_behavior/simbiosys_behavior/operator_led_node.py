@@ -39,8 +39,8 @@ class OperatorLedNode(Node):
         super().__init__("operator_led_node")
 
         self.declare_parameter("enabled", True)
-        self.declare_parameter("led_count", 10)
-        self.declare_parameter("one_based_led_numbers", True)
+        self.declare_parameter("led_count", 4)
+        self.declare_parameter("one_based_led_numbers", False)
         self.declare_parameter(
             "set_single_service_name",
             "/io/leds/leds/set_color_single",
@@ -54,13 +54,13 @@ class OperatorLedNode(Node):
         self.declare_parameter("strafe_linear_y_threshold", 0.03)
         self.declare_parameter("cmd_vel_timeout_sec", 0.5)
         self.declare_parameter("reverse_led_order", False)
-        self.declare_parameter("invert_turn_direction", False)
+        self.declare_parameter("invert_turn_direction", True)
         self.declare_parameter("invert_strafe_direction", False)
         self.declare_parameter("missing_service_log_period_sec", 10.0)
-        self.declare_parameter("left_turn_leds", [1, 3, 5])
-        self.declare_parameter("right_turn_leds", [6, 8, 10])
-        self.declare_parameter("left_strafe_leds", [1, 2])
-        self.declare_parameter("right_strafe_leds", [9, 10])
+        self.declare_parameter("left_turn_leds", [0, 1])
+        self.declare_parameter("right_turn_leds", [2, 3])
+        self.declare_parameter("left_strafe_leds", [3])
+        self.declare_parameter("right_strafe_leds", [0])
 
         self._client = self.create_client(
             SetNeopixelSingle,

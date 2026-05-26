@@ -34,13 +34,6 @@ def generate_launch_description():
     operator_led_strafe_linear_y_threshold = LaunchConfiguration(
         "operator_led_strafe_linear_y_threshold"
     )
-    operator_led_reverse_led_order = LaunchConfiguration("operator_led_reverse_led_order")
-    operator_led_invert_turn_direction = LaunchConfiguration(
-        "operator_led_invert_turn_direction"
-    )
-    operator_led_invert_strafe_direction = LaunchConfiguration(
-        "operator_led_invert_strafe_direction"
-    )
 
     return LaunchDescription(
         [
@@ -81,21 +74,6 @@ def generate_launch_description():
                 "operator_led_strafe_linear_y_threshold",
                 default_value="0.03",
                 description="Minimum absolute cmd_vel linear.y for strafe blinkers.",
-            ),
-            DeclareLaunchArgument(
-                "operator_led_reverse_led_order",
-                default_value="false",
-                description="Reverse LED strip indexing when the physical strip is mounted opposite.",
-            ),
-            DeclareLaunchArgument(
-                "operator_led_invert_turn_direction",
-                default_value="false",
-                description="Swap left/right turn blinkers for cmd_vel angular.z.",
-            ),
-            DeclareLaunchArgument(
-                "operator_led_invert_strafe_direction",
-                default_value="false",
-                description="Swap left/right strafe blinkers for cmd_vel linear.y.",
             ),
             DeclareLaunchArgument(
                 "image_topic",
@@ -183,9 +161,6 @@ def generate_launch_description():
                         "brightness": operator_led_brightness,
                         "turn_angular_threshold": operator_led_turn_angular_threshold,
                         "strafe_linear_y_threshold": operator_led_strafe_linear_y_threshold,
-                        "reverse_led_order": operator_led_reverse_led_order,
-                        "invert_turn_direction": operator_led_invert_turn_direction,
-                        "invert_strafe_direction": operator_led_invert_strafe_direction,
                     }
                 ],
             ),
