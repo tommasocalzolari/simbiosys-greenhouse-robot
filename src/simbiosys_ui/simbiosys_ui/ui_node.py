@@ -17,7 +17,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sensor_msgs.msg import BatteryState, CompressedImage, Image
+from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -35,27 +35,21 @@ except ImportError:
     SendNamedArmPose = None
     SetRobotMode = None
 
-try:
-    import cv2
-    from cv_bridge import CvBridge
-except ImportError:
-    cv2 = None
-    CvBridge = None
-
-
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "rosTopics.json"
 DEFAULT_WEB_HOST = "0.0.0.0"
 DEFAULT_WEB_PORT = 8080
+DEFAULT_CAMERA_MAX_FPS = 1.0
+DEFAULT_TELEOP_QUEUE_DEPTH = 1
 DEFAULT_CONFIG = {
     "rosbridgeUrl": "ws://localhost:9090",
     "topics": {
-        "cmdVel": "/mirte_base_controller/cmd_vel_unstamped",
-        "baseCameraCompressed": "/camera/image_raw/compressed",
-        "baseCameraRaw": "/camera/image_raw",
-        "armCameraCompressed": None,
-        "armCameraRaw": "/gripper_camera/image_raw",
+        "cmdVel": "/mirte_base_controller/cmd_vel",
+        "baseCameraCompressed": "/camera/color/image_raw/compressed",
+        "baseCameraRaw": None,
+        "armCameraCompressed": "/gripper_camera/image_raw/compressed",
+        "armCameraRaw": None,
         "liveMap": "/map",
-        "mapUpdatePeriodSec": 20,
+        "mapUpdatePeriodSec": 10,
         "mappingStatus": "simbiosys/mapping_status",
         "taskStatus": "simbiosys/task_status",
         "setTaskMode": "simbiosys/set_robot_mode",
@@ -73,8 +67,9 @@ DEFAULT_CONFIG = {
         "plantHealth": "/plant_health",
         "plantHealthReport": "/plant_health_report",
         "typedPlantHealth": "simbiosys/plant_health",
+        "flowerCounts": "/simbiosys/flower_counts",
         "bedObservation": "simbiosys/bed_observation",
-        "battery": "/battery_state",
+        "battery": "/io/power/power_watcher",
     },
 }
 
@@ -87,6 +82,12 @@ MAX_LINEAR_SPEED = 1.0
 MAX_ANGULAR_SPEED = 2.0
 ARM_POSES = ("home", "camera_forward", "camera_down", "inspect", "stow")
 TASK_MODE_TO_BACKEND = {"harvest": "HARVESTING", "scanning": "SCANNING"}
+
+
+class UiHttpServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    block_on_close = False
 
 
 INDEX_HTML = """<!doctype html>
@@ -370,7 +371,7 @@ INDEX_HTML = """<!doctype html>
               <span class="status-pill" id="camera-state">waiting</span>
             </div>
             <div class="camera">
-              <img id="camera-feed" src="/stream.mjpg" alt="Live camera feed">
+              <img id="camera-feed" alt="Live camera feed">
               <div id="camera-placeholder" class="placeholder" style="display:none">Waiting for camera frames</div>
             </div>
           </div>
@@ -441,7 +442,7 @@ INDEX_HTML = """<!doctype html>
             <h2>Mapping Workflow</h2>
             <div class="topline">
               <button id="start-mapping" disabled>Start Mapping</button>
-              <button id="done-mapping" disabled>Done Mapping</button>
+              <button id="done-mapping" disabled>Stop Mapping</button>
               <button id="retry-mapping" disabled>Retry</button>
               <button id="save-safe-map" disabled>Save Safe Map</button>
             </div>
@@ -477,6 +478,7 @@ INDEX_HTML = """<!doctype html>
       pressedKeys: new Set(),
       latestMap: null,
       frozenMap: null,
+      mappingActive: false,
       reviewMode: false,
       candidates: [],
       frozenCandidates: null,
@@ -498,6 +500,16 @@ INDEX_HTML = """<!doctype html>
       teleop: document.getElementById("teleop-page"),
     };
 
+    function updateCameraStream() {
+      const feed = document.getElementById("camera-feed");
+      const camera = document.getElementById("camera-select").value;
+      if (state.page !== "teleop") {
+        feed.removeAttribute("src");
+        return;
+      }
+      feed.src = `/stream.mjpg?camera=${camera}&t=${Date.now()}`;
+    }
+
     function showPage(page) {
       state.page = page;
       pages.dashboard.classList.toggle("active", page === "dashboard");
@@ -505,6 +517,8 @@ INDEX_HTML = """<!doctype html>
       document.getElementById("to-teleop").style.display = page === "dashboard" ? "" : "none";
       document.getElementById("to-dashboard").style.display = page === "teleop" ? "" : "none";
       if (page === "dashboard") stopTeleop();
+      updateCameraStream();
+      postJson("/api/view", {page}).catch(() => {});
     }
     document.getElementById("to-teleop").addEventListener("click", () => showPage("teleop"));
     document.getElementById("to-dashboard").addEventListener("click", () => showPage("dashboard"));
@@ -538,7 +552,7 @@ INDEX_HTML = """<!doctype html>
       repeatTimer = null;
     }
     function ensureRepeat() {
-      if (!repeatTimer) repeatTimer = setInterval(sendTeleop, 250);
+      if (!repeatTimer) repeatTimer = setInterval(sendTeleop, 100);
     }
     function stopTeleop() {
       clearRepeat();
@@ -584,6 +598,7 @@ INDEX_HTML = """<!doctype html>
     window.addEventListener("pagehide", () => {
       state.activeSources.clear();
       refreshActiveControls();
+      navigator.sendBeacon("/api/view", JSON.stringify({page: "dashboard"}));
       navigator.sendBeacon("/api/teleop", JSON.stringify({controls: [], speedMode: "slow"}));
     });
 
@@ -951,10 +966,10 @@ INDEX_HTML = """<!doctype html>
       drawOccupancyGrid("teleop-map-canvas", "teleop-map-placeholder", map, data.robotPose, true, null);
     }
     function maybeRenderMaps(data) {
-      const map = state.reviewMode && state.frozenMap ? state.frozenMap : data.map;
+      const map = state.reviewMode && state.frozenMap ? state.frozenMap : (data.map || state.latestMap);
       const stamp = map ? map.receivedAt : null;
       const candidateStamp = state.reviewMode ? "review" : state.artifactCandidatesReceivedAt;
-      const periodMs = Math.max(1, Number(data.topics.mapUpdatePeriodSec || 20)) * 1000;
+      const periodMs = Math.max(1, Number(data.topics.mapUpdatePeriodSec || 10)) * 1000;
       const now = Date.now();
       if (!map) {
         renderMaps(data);
@@ -1009,9 +1024,13 @@ INDEX_HTML = """<!doctype html>
         row.className = "control-row";
         const name = plant.flower_id || "unidentified plant";
         const parts = [];
+        if (plant.bed_id) parts.push(`bed ${plant.bed_id}`);
+        if (plant.health) parts.push(plant.health);
         if (plant.color) parts.push(plant.color);
         if (plant.growth_stage) parts.push(plant.growth_stage);
+        if (plant.bug_detected) parts.push("bugs detected");
         if (plant.ready_for_harvest) parts.push("ready");
+        if (plant.confidence != null) parts.push(`${Math.round(Number(plant.confidence) * 100)}% confidence`);
         if (plant.last_scan_time) parts.push(`last scan ${timeSince(plant.last_scan_time)}`);
         row.innerHTML = `<span>${name}</span><strong>${parts.join(", ") || "real record received"}</strong>`;
         records.appendChild(row);
@@ -1176,7 +1195,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("camera-select").addEventListener("change", async (event) => {
       const data = await postJson("/api/camera/select", {camera: event.target.value});
       document.getElementById("camera-state").textContent = data.message;
-      document.getElementById("camera-feed").src = `/stream.mjpg?camera=${event.target.value}&t=${Date.now()}`;
+      updateCameraStream();
     });
     function renderArmButtons(data) {
       const grid = document.getElementById("arm-pose-buttons");
@@ -1214,7 +1233,8 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("camera-placeholder").style.display = data.cameraReady ? "none" : "grid";
         document.getElementById("camera-select").value = data.camera.current;
         document.querySelector('#camera-select option[value="arm"]').disabled = !data.camera.armAvailable;
-        const mapText = data.map ? `Map ${data.map.width}x${data.map.height} at ${data.map.resolution} m/cell` : "Waiting for SLAM map";
+        const currentMap = data.map || state.latestMap;
+        const mapText = currentMap ? `Map ${currentMap.width}x${currentMap.height} at ${currentMap.resolution} m/cell` : "Waiting for SLAM map";
         document.getElementById("map-state").textContent = mapText;
         document.getElementById("map-meta").textContent = mapAgeText(state.latestMap);
         document.getElementById("dashboard-map-time").textContent = mapAgeText(state.latestMap);
@@ -1368,17 +1388,27 @@ class UiNode(Node):
         self.declare_parameter("web_host", os.getenv("SIMBIOSYS_UI_HOST", DEFAULT_WEB_HOST))
         self.declare_parameter("web_port", env_web_port())
         self.declare_parameter("cmd_vel_topic", self._topics["cmdVel"])
-        self.declare_parameter("image_topic", self._topics["baseCameraRaw"])
+        self.declare_parameter("teleop_queue_depth", DEFAULT_TELEOP_QUEUE_DEPTH)
+        self.declare_parameter("image_topic", self._topics.get("baseCameraRaw") or "")
         self.declare_parameter("compressed_image_topic", self._topics["baseCameraCompressed"])
+        self.declare_parameter("camera_max_fps", DEFAULT_CAMERA_MAX_FPS)
         self.declare_parameter("live_map_topic", self._topics["liveMap"])
         self._apply_topic_parameters()
 
         self._web_host = self.get_parameter("web_host").value
         self._web_port = int(self.get_parameter("web_port").value)
-        self._bridge = CvBridge() if CvBridge is not None else None
+        self._camera_max_fps = max(
+            0.1,
+            min(float(self.get_parameter("camera_max_fps").value), DEFAULT_CAMERA_MAX_FPS),
+        )
+        self._camera_frame_period = 1.0 / self._camera_max_fps
         self._frame_lock = threading.Lock()
         self._frames = {"base": None, "arm": None}
-        self._last_compressed_frame_time = {"base": 0.0, "arm": 0.0}
+        self._frame_versions = {"base": 0, "arm": 0}
+        self._last_frame_update_time = {"base": 0.0, "arm": 0.0}
+        self._shutting_down = threading.Event()
+        self._active_page = "dashboard"
+        self._camera_subscriptions = {}
         self._selected_camera = "base"
         self._last_command_time = 0.0
         self._active_controls = set()
@@ -1386,10 +1416,13 @@ class UiNode(Node):
         self._safety_paused = False
         self._manual_control_active = False
         self._plants = {}
+        self._flower_counts = None
         self._external_report = None
         self._map = None
+        self._last_status_map_sent_at = 0.0
         self._robot_pose = None
         self._battery_percent = None
+        self._last_battery_update_at = 0.0
         self._bed_observations = {}
         self._mapping_status = None
         self._task_status = None
@@ -1397,14 +1430,17 @@ class UiNode(Node):
         self._artifact_candidates_received_at = None
         self._artifact_candidates_parse_error = ""
 
-        self._cmd_vel_publisher = self.create_publisher(Twist, self._topics["cmdVel"], 10)
-        self._create_camera_subscriptions()
+        teleop_queue_depth = max(1, int(self.get_parameter("teleop_queue_depth").value))
+        self._cmd_vel_publisher = self.create_publisher(Twist, self._topics["cmdVel"], teleop_queue_depth)
+        self._sync_camera_subscriptions()
         if self._topics.get("liveMap"):
             self.create_subscription(OccupancyGrid, self._topics["liveMap"], self._on_map, 10)
         self.create_subscription(Odometry, self._topics["odom"], self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, self._topics["amclPose"], self._on_amcl_pose, 10)
         self.create_subscription(String, self._topics["plantHealth"], self._on_plant_health, 10)
         self.create_subscription(String, self._topics["plantHealthReport"], self._on_plant_health_report, 10)
+        if self._topics.get("flowerCounts"):
+            self.create_subscription(String, self._topics["flowerCounts"], self._on_flower_counts, 10)
         self.create_subscription(BatteryState, self._topics["battery"], self._on_battery, 10)
         if PlantHealth is not None:
             self.create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
@@ -1425,7 +1461,7 @@ class UiNode(Node):
         self._save_safe_map_client = self.create_client(Trigger, self._topics["saveSafeMap"]) if self._topics.get("saveSafeMap") else None
 
         self.create_timer(0.1, self._on_teleop_timer)
-        self._http_server = ThreadingHTTPServer((self._web_host, self._web_port), self._make_handler())
+        self._http_server = UiHttpServer((self._web_host, self._web_port), self._make_handler())
         self._http_thread = threading.Thread(target=self._http_server.serve_forever, daemon=True)
         self._http_thread.start()
 
@@ -1433,30 +1469,57 @@ class UiNode(Node):
         self.get_logger().info(f"Publishing Twist to {self._topics['cmdVel']}; using real ROS/project data only")
 
     def _apply_topic_parameters(self) -> None:
-        configured_raw_image = self.get_parameter("image_topic").get_parameter_value().string_value
+        configured_raw_image = self.get_parameter("image_topic").get_parameter_value().string_value or None
         configured_compressed_image = self.get_parameter("compressed_image_topic").get_parameter_value().string_value
-        if configured_raw_image != self._topics["baseCameraRaw"] and configured_compressed_image == self._topics["baseCameraCompressed"]:
+        if configured_raw_image and configured_raw_image != self._topics["baseCameraRaw"] and configured_compressed_image == self._topics["baseCameraCompressed"]:
             configured_compressed_image = f"{configured_raw_image}/compressed"
         self._topics["cmdVel"] = self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
-        self._topics["baseCameraRaw"] = configured_raw_image
+        self._topics["baseCameraRaw"] = None
         self._topics["baseCameraCompressed"] = configured_compressed_image
         self._topics["liveMap"] = self.get_parameter("live_map_topic").get_parameter_value().string_value
 
-    def _create_camera_subscriptions(self) -> None:
-        self.create_subscription(Image, self._topics["baseCameraRaw"], lambda msg: self._on_image("base", msg), 10)
-        self.create_subscription(CompressedImage, self._topics["baseCameraCompressed"], lambda msg: self._on_compressed_image("base", msg), 10)
-        if self._topics.get("armCameraRaw"):
-            self.create_subscription(Image, self._topics["armCameraRaw"], lambda msg: self._on_image("arm", msg), 10)
-        if self._topics.get("armCameraCompressed"):
-            self.create_subscription(CompressedImage, self._topics["armCameraCompressed"], lambda msg: self._on_compressed_image("arm", msg), 10)
+    def _desired_camera_subscription(self):
+        if self._active_page != "teleop":
+            return None
+        topic_key = f"{self._selected_camera}CameraCompressed"
+        topic = self._topics.get(topic_key)
+        if not topic:
+            return None
+        return self._selected_camera, topic
+
+    def _sync_camera_subscriptions(self) -> None:
+        desired = self._desired_camera_subscription()
+        desired_camera = desired[0] if desired else None
+        for camera, subscription in list(self._camera_subscriptions.items()):
+            if camera != desired_camera:
+                self.destroy_subscription(subscription)
+                del self._camera_subscriptions[camera]
+                with self._frame_lock:
+                    self._frames[camera] = None
+                    self._frame_versions[camera] += 1
+        if desired is None:
+            return
+        camera, topic = desired
+        if camera in self._camera_subscriptions:
+            return
+        self._camera_subscriptions[camera] = self.create_subscription(
+            CompressedImage,
+            topic,
+            lambda msg, camera=camera: self._on_compressed_image(camera, msg),
+            1,
+        )
 
     def destroy_node(self) -> bool:
+        self._shutting_down.set()
         try:
             self._publish_twist(0.0, 0.0, 0.0)
         except Exception:
             pass
-        self._http_server.shutdown()
-        self._http_server.server_close()
+        try:
+            self._http_server.shutdown()
+            self._http_server.server_close()
+        except Exception:
+            pass
         return super().destroy_node()
 
     def _detect_lan_ip(self) -> str:
@@ -1511,6 +1574,7 @@ class UiNode(Node):
                     "/api/navigation/goal": node.send_navigation_goal,
                     "/api/task_mode": node.set_task_mode,
                     "/api/take_control": node.take_control,
+                    "/api/view": node.set_active_view,
                     "/api/camera/select": node.select_camera,
                     "/api/arm/pose": node.send_arm_pose,
                     "/api/mapping/start": node.start_mapping,
@@ -1552,8 +1616,16 @@ class UiNode(Node):
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                while True:
-                    frame = node.latest_frame()
+                last_version = None
+                while not node._shutting_down.is_set():
+                    frame_version = node.latest_frame_with_version()
+                    if frame_version is None:
+                        time.sleep(0.2)
+                        continue
+                    version, frame = frame_version
+                    if version == last_version:
+                        time.sleep(min(0.2, node._camera_frame_period))
+                        continue
                     if frame is None:
                         time.sleep(0.2)
                         continue
@@ -1563,15 +1635,24 @@ class UiNode(Node):
                         self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii"))
                         self.wfile.write(frame)
                         self.wfile.write(b"\r\n")
-                        time.sleep(0.08)
+                        last_version = version
+                        time.sleep(node._camera_frame_period)
                     except (BrokenPipeError, ConnectionResetError):
                         break
 
         return RequestHandler
 
     def latest_frame(self):
+        if self._active_page != "teleop":
+            return None
         with self._frame_lock:
             return self._frames.get(self._selected_camera)
+
+    def latest_frame_with_version(self):
+        if self._active_page != "teleop":
+            return None
+        with self._frame_lock:
+            return self._frame_versions.get(self._selected_camera, 0), self._frames.get(self._selected_camera)
 
     def _service_ready(self, client) -> bool:
         return bool(client is not None and client.service_is_ready())
@@ -1580,7 +1661,7 @@ class UiNode(Node):
         return bool(client is not None and client.server_is_ready())
 
     def status_payload(self, host_header: str = "") -> dict:
-        arm_available = bool(self._topics.get("armCameraRaw") or self._topics.get("armCameraCompressed"))
+        arm_available = bool(self._topics.get("armCameraCompressed"))
         return {
             "rosConnected": True,
             "rosbridgeUrl": dynamic_rosbridge_url(self._config["rosbridgeUrl"], host_header),
@@ -1593,9 +1674,10 @@ class UiNode(Node):
                 "armAvailable": arm_available,
             },
             "plants": list(self._plants.values()),
+            "flowerCounts": copy.deepcopy(self._flower_counts),
             "beds": self._bed_payload(),
             "report": self._external_report or self._computed_report(),
-            "map": self._map,
+            "map": self._status_map_payload(),
             "robotPose": self._robot_pose,
             "batteryPercent": self._battery_percent,
             "bedObservations": copy.deepcopy(self._bed_observations),
@@ -1628,6 +1710,16 @@ class UiNode(Node):
             "artifactCandidatesParseError": self._artifact_candidates_parse_error,
             "teleop": sorted(self._active_controls),
         }
+
+    def _status_map_payload(self):
+        if self._map is None:
+            return None
+        period_sec = max(1.0, float(self._topics.get("mapUpdatePeriodSec") or 10))
+        now = time.monotonic()
+        if now - self._last_status_map_sent_at < period_sec:
+            return None
+        self._last_status_map_sent_at = now
+        return self._map
 
     def toggle_safety(self, _payload) -> dict:
         self._safety_paused = not self._safety_paused
@@ -1751,13 +1843,27 @@ class UiNode(Node):
             ),
         }
 
+    def set_active_view(self, payload) -> dict:
+        page = str(payload.get("page", "dashboard")).strip().lower()
+        if page not in {"dashboard", "teleop"}:
+            return {"accepted": False, "message": "Unknown view"}
+        self._active_page = page
+        if page != "teleop":
+            self._active_controls = set()
+            self._publish_twist(0.0, 0.0, 0.0)
+        self._sync_camera_subscriptions()
+        return {"ok": True, "page": self._active_page}
+
     def select_camera(self, payload) -> dict:
         camera = str(payload.get("camera", "base")).strip().lower()
         if camera not in {"base", "arm"}:
             return {"accepted": False, "message": "Unknown camera"}
-        if camera == "arm" and not (self._topics.get("armCameraRaw") or self._topics.get("armCameraCompressed")):
+        if camera == "arm" and not self._topics.get("armCameraCompressed"):
             return {"accepted": False, "message": "Arm camera unavailable"}
+        if camera == "base" and not self._topics.get("baseCameraCompressed"):
+            return {"accepted": False, "message": "Base camera unavailable"}
         self._selected_camera = camera
+        self._sync_camera_subscriptions()
         return {"ok": True, "message": f"{camera} camera selected"}
 
     def send_arm_pose(self, payload) -> dict:
@@ -1870,27 +1976,16 @@ class UiNode(Node):
             "message": response.message or accepted_message,
         }
 
-    def _on_image(self, camera: str, msg: Image) -> None:
-        if self._bridge is None or cv2 is None:
-            return
-        if time.monotonic() - self._last_compressed_frame_time.get(camera, 0.0) < 2.0:
-            return
-        try:
-            image = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            success, buffer = cv2.imencode(".jpg", image)
-        except Exception as exc:
-            self.get_logger().warn(f"Could not encode {camera} camera frame: {exc}")
-            return
-        if success:
-            with self._frame_lock:
-                self._frames[camera] = buffer.tobytes()
-
     def _on_compressed_image(self, camera: str, msg: CompressedImage) -> None:
-        if msg.format and "jpeg" not in msg.format.lower() and "jpg" not in msg.format.lower() and cv2 is None:
+        if msg.format and "jpeg" not in msg.format.lower() and "jpg" not in msg.format.lower():
+            return
+        now = time.monotonic()
+        if now - self._last_frame_update_time.get(camera, 0.0) < self._camera_frame_period:
             return
         with self._frame_lock:
             self._frames[camera] = bytes(msg.data)
-            self._last_compressed_frame_time[camera] = time.monotonic()
+            self._frame_versions[camera] = self._frame_versions.get(camera, 0) + 1
+            self._last_frame_update_time[camera] = now
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         self._map = {
@@ -1979,14 +2074,39 @@ class UiNode(Node):
             "bed_id": str(msg.bed_id).strip(),
             "height_cm": round(float(msg.height_cm), 1),
             "color": msg.color,
+            "health": msg.health,
             "growth_stage": msg.growth_stage,
+            "bug_detected": bool(msg.bug_detected),
             "flower_detected": bool(msg.flower_detected),
             "ready_for_harvest": bool(msg.ready_for_harvest),
+            "confidence": float(msg.confidence),
             "last_scan_time": self._time_msg_to_iso(msg.last_scan_time),
             "notes": msg.notes,
             "position": {"x": msg.position.x, "y": msg.position.y, "z": msg.position.z},
         }
         self._update_plant_from_payload(flower_id, payload)
+        self._external_report = None
+
+    def _on_flower_counts(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f"Ignoring invalid flower count JSON: {exc}")
+            return
+        counts = {}
+        for key in ("magenta", "light_pink", "white", "total", "bed_id"):
+            if key not in payload:
+                continue
+            try:
+                counts[key] = int(payload[key])
+            except (TypeError, ValueError):
+                continue
+        if "total" not in counts:
+            counts["total"] = sum(
+                counts.get(color, 0) for color in ("magenta", "light_pink", "white")
+            )
+        counts["received_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._flower_counts = counts
         self._external_report = None
 
     def _on_bed_observation(self, msg) -> None:
@@ -2029,10 +2149,10 @@ class UiNode(Node):
 
     def _update_plant_from_payload(self, flower_id: str, payload: dict) -> None:
         plant = self._plants.setdefault(flower_id, {"flower_id": flower_id})
-        for key in ("height_cm", "color", "growth_stage", "last_scan_time", "notes", "position"):
+        for key in ("bed_id", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
             if key in payload:
                 plant[key] = payload[key]
-        for key in ("flower_detected", "ready_for_harvest"):
+        for key in ("bug_detected", "flower_detected", "ready_for_harvest"):
             if key in payload:
                 plant[key] = bool(payload[key])
 
@@ -2050,7 +2170,11 @@ class UiNode(Node):
 
     def _on_battery(self, msg: BatteryState) -> None:
         if msg.percentage >= 0:
+            now = time.monotonic()
+            if self._battery_percent is not None and now - self._last_battery_update_at < 60.0:
+                return
             self._battery_percent = max(0.0, min(100.0, float(msg.percentage) * 100.0))
+            self._last_battery_update_at = now
 
     def _on_teleop_timer(self) -> None:
         if self._active_controls and time.monotonic() - self._last_command_time > 0.6:
@@ -2108,11 +2232,18 @@ class UiNode(Node):
     def _computed_report(self) -> dict:
         plants = list(self._plants.values())
         last_scan = max((plant.get("last_scan_time", "") for plant in plants), default="")
+        total_flowers = (
+            int(self._flower_counts.get("total", 0))
+            if isinstance(self._flower_counts, dict)
+            else len(plants)
+        )
+        if not last_scan and isinstance(self._flower_counts, dict):
+            last_scan = self._flower_counts.get("received_at", "")
         return {
             "totalBeds": len(self._bed_observations),
-            "totalFlowers": len(plants),
+            "totalFlowers": total_flowers,
             "lastScanTime": last_scan,
-            "nextAction": "Waiting for real data" if not plants and not self._bed_observations else "Real records received",
+            "nextAction": "Waiting for real data" if not plants and not self._bed_observations and not self._flower_counts else "Real records received",
         }
 
 

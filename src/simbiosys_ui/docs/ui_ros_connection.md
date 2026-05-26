@@ -36,5 +36,5 @@ The UI is defensive when topics are missing:
 
 - Camera page shows a waiting state until frames arrive.
 - Dashboard shows `Waiting for SLAM map topic` when `/map` is unavailable.
-- Battery is hidden gracefully when `/battery_state` is unavailable.
+- Battery is read from `/io/power/power_watcher` and hidden gracefully when unavailable.
 - Plant-health and report panels show waiting states until real ROS messages arrive.
