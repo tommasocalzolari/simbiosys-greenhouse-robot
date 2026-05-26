@@ -10,10 +10,9 @@ simbiosys_ui/config/rosTopics.json
 
 | Purpose | Name | Type | Owner | Used by UI | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Teleop velocity | `/mirte_base_controller/cmd_vel_unstamped` | `geometry_msgs/msg/Twist` | MIRTE base controller | yes | UI publishes zero Twist on STOP, release, hide, unload, timeout, and shutdown. |
-| Base/front camera compressed | `/camera/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | MIRTE simulation/camera driver | yes | Preferred base camera stream. |
-| Base/front camera raw | `/camera/image_raw` | `sensor_msgs/msg/Image` | MIRTE simulation/camera driver | yes | Fallback when compressed frames are not available. |
-| Arm/gripper camera raw | `/gripper_camera/image_raw` | `sensor_msgs/msg/Image` | MIRTE robot topic config | yes, if available | Camera selector enables arm camera only when configured. |
+| Teleop velocity | `/mirte_base_controller/cmd_vel` | `geometry_msgs/msg/Twist` | MIRTE base controller | yes | UI publisher uses queue depth 1 by default and publishes zero Twist on STOP, release, hide, unload, timeout, and shutdown. |
+| Base/front camera compressed | `/camera/color/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | MIRTE simulation/camera driver | yes, only on Teleop page when selected | UI subscribes only to the selected compressed camera stream and caps UI updates to 1 FPS by default. |
+| Arm/gripper camera compressed | `/gripper_camera/image_raw/compressed` | `sensor_msgs/msg/CompressedImage` | MIRTE robot topic config | yes, only on Teleop page when selected | Camera selector enables arm camera only when a compressed topic is configured; UI updates are capped to 1 FPS by default. |
 | Live map | `/map` | `nav_msgs/msg/OccupancyGrid` | `slam_toolbox` / Nav2 map server | yes | Dashboard target selection and Teleop SLAM panel use only real map messages. |
 | Odometry pose | `/mirte_base_controller/odom` | `nav_msgs/msg/Odometry` | MIRTE base controller | yes | Robot marker is drawn only on the Teleop SLAM map. |
 | Localized pose | `/amcl_pose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | Nav2 AMCL | yes | Overrides odometry pose when received. |
@@ -27,7 +26,7 @@ simbiosys_ui/config/rosTopics.json
 | Legacy plant record | `/plant_health` | `std_msgs/msg/String` JSON | legacy/UI integration | yes | Must include a real `flower_id`; otherwise ignored. |
 | Plant report | `/plant_health_report` | `std_msgs/msg/String` JSON/text | future/report backend | yes | Optional summary source. |
 | Bed observation | `simbiosys/bed_observation` | `simbiosys_interfaces/msg/BedObservation` | `simbiosys_perception/apriltag_detection_node.py` | limited | Gives real bed IDs/visibility only; no CO2/humidity/bugs fields exist. |
-| Battery | `/battery_state` | `sensor_msgs/msg/BatteryState` | robot battery publisher | yes | Hidden as unavailable when missing. |
+| Battery | `/io/power/power_watcher` | `sensor_msgs/msg/BatteryState` | MIRTE telemetrix INA226 power watcher | yes | Shows percentage from the same power watcher that drives the robot battery indicator; UI value updates at most once per minute. |
 | Raw map save | `/getmap_node/save_map` | `std_srvs/srv/Trigger` | `simbiosys_mapping/getmap_node.py` | no | Saves raw map only; not a reviewed safe-map backend. |
 
 ## Missing Required Interfaces

@@ -1,13 +1,13 @@
 {
   "rosbridgeUrl": "ws://localhost:9090",
   "topics": {
-    "cmdVel": "/mirte_base_controller/cmd_vel_unstamped",
-    "baseCameraCompressed": "/camera/image_raw/compressed",
-    "baseCameraRaw": "/camera/image_raw",
-    "armCameraCompressed": null,
-    "armCameraRaw": "/gripper_camera/image_raw",
+    "cmdVel": "/mirte_base_controller/cmd_vel",
+    "baseCameraCompressed": "/camera/color/image_raw/compressed",
+    "baseCameraRaw": null,
+    "armCameraCompressed": "/gripper_camera/image_raw/compressed",
+    "armCameraRaw": null,
     "liveMap": "/map",
-    "mapUpdatePeriodSec": 20,
+    "mapUpdatePeriodSec": 10,
     "mappingStatus": "simbiosys/mapping_status",
     "taskStatus": "simbiosys/task_status",
     "setTaskMode": "simbiosys/set_robot_mode",
@@ -25,7 +25,8 @@
     "plantHealth": "/plant_health",
     "plantHealthReport": "/plant_health_report",
     "typedPlantHealth": "simbiosys/plant_health",
+    "flowerCounts": "/simbiosys/flower_counts",
     "bedObservation": "simbiosys/bed_observation",
-    "battery": "/battery_state"
+    "battery": "/io/power/power_watcher"
   }
 }
