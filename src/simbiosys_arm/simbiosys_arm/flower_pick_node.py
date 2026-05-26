@@ -147,7 +147,7 @@ class FlowerPickNode(Node):
         self.declare_parameter("inspect_distance_offset_m", 0.06)
         self.declare_parameter("pre_grasp_distance_offset_m", 0.03)
         self.declare_parameter("grasp_below_head_m", 0.015)
-        self.declare_parameter("lift_above_grasp_m", 0.08)
+        self.declare_parameter("lift_above_grasp_m", 0.16)
         self.declare_parameter("ready_above_head_m", 0.12)
         self.declare_parameter("ready_distance_m", 0.23)
 
@@ -185,8 +185,8 @@ class FlowerPickNode(Node):
             "gripper_action",
             "/mirte_master_gripper_controller/gripper_cmd",
         )
-        self.declare_parameter("open_position", -0.2)
-        self.declare_parameter("close_position", 0.3)
+        self.declare_parameter("open_position", -0.75)
+        self.declare_parameter("close_position", 0.2)
         self.declare_parameter("max_effort", 0.0)
 
         self._trajectory_publisher = self.create_publisher(
@@ -277,6 +277,7 @@ class FlowerPickNode(Node):
                     message = f"Pick failed during {step_name}: {step_message}"
                     self.get_logger().warning(message)
                     return False, message
+                time.sleep(0.5)
 
             message = "Flower pick sequence completed"
             self.get_logger().info(message)
