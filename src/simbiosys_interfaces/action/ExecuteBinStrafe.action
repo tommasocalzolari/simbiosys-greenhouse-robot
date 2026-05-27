@@ -1,0 +1,17 @@
+string bed_id
+string side
+string direction
+float32 target_distance_m
+float32 strafe_speed_mps
+float32 timeout_sec
+bool dry_run
+---
+bool success
+string message
+float32 elapsed_sec
+---
+string phase
+float32 distance_error_m
+float32 yaw_error_rad
+float32 confidence
+string message

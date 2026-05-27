@@ -28,6 +28,7 @@ set(msg_files
   "msg/BedObservation.msg"
   "msg/BedRectangle.msg"
   "msg/BedSideAlignment.msg"
+  "msg/BinWallAlignment.msg"
   "msg/BehaviorType.msg"
   "msg/DetectedTag.msg"
   "msg/FlowerData.msg"
@@ -57,6 +58,7 @@ set(srv_files
 )
 
 set(action_files
+  "action/ExecuteBinStrafe.action"
   "action/ExecuteBedSideScan.action"
   "action/ExecuteArmMotion.action"
   "action/ExecuteBehavior.action"

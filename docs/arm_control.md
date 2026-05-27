@@ -109,7 +109,7 @@ lift
 move_storage
 open_gripper_drop
 move_stow_end
-```
+```I implemeted some bedside allignment streafe mode. however this is not working at all so i would like to start from scratch. somehow i need to get a strafe mode where the robot strafes left or right next to a flower bin. i want it to get allignment based on either lidar or depth cam. prefer lidar due to information size to get from the robot. the allignment should work on straight walls with small legs sticking out of about 1x1 cm, and then like 50 cm of straight wall. how would you tackle this problem. it should also handle corners . so at a corner it should not try to go around the corner
 
 The default motion backend is `simple_ik`. This keeps the demo independent from
 RViz/MoveIt planning for the actual run. The simple IK:

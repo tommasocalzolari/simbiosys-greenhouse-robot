@@ -19,8 +19,8 @@ class AlignmentStrafeTestNode(Node):
         self.declare_parameter("alignment_topic", "simbiosys/bed_side_alignment")
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("cmd_vel_topic", "/mirte_base_controller/cmd_vel_unstamped")
-        self.declare_parameter("enable_motion", False)
-        self.declare_parameter("strafe_direction", "left")
+        self.declare_parameter("enable_motion", True)
+        self.declare_parameter("strafe_direction", "right")
         self.declare_parameter("strafe_speed_mps", 0.25)
         self.declare_parameter("distance_gain", 0.35)
         self.declare_parameter("yaw_gain", 1.2)
@@ -63,10 +63,16 @@ class AlignmentStrafeTestNode(Node):
 
         period = 1.0 / max(0.1, self._double_parameter("control_rate_hz"))
         self._timer = self.create_timer(period, self._publish_control)
-        self.get_logger().info(
-            "Alignment strafe test node started with motion disabled. "
-            "Set enable_motion:=true only in a safe test area."
-        )
+        if self._bool_parameter("enable_motion"):
+            self.get_logger().info(
+                "Alignment strafe test node started with motion enabled. "
+                "It will still wait for fresh valid alignment and scan data before moving."
+            )
+        else:
+            self.get_logger().info(
+                "Alignment strafe test node started with motion disabled. "
+                "Set enable_motion:=true only in a safe test area."
+            )
 
     def _on_alignment(self, msg: BedSideAlignment) -> None:
         with self._lock:

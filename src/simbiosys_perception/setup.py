@@ -25,6 +25,7 @@ setup(
             "flower_detection_node = simbiosys_perception.flower_detection_node:main",
             "apriltag_detection_node = "
             "simbiosys_perception.apriltag_detection_node:main",
+            "bin_wall_alignment_node = simbiosys_perception.bin_wall_alignment_node:main",
             "bed_side_alignment_node = simbiosys_perception.bed_side_alignment_node:main",
             "alignment_strafe_test_node = "
             "simbiosys_perception.alignment_strafe_test_node:main",

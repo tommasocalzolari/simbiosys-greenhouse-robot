@@ -5,42 +5,43 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
-from simbiosys_interfaces.msg import BedSideAlignment
+from simbiosys_interfaces.msg import BinWallAlignment
 
-from .surface_fit import fit_surface_alignment, scan_ranges_to_points
-
-
-SURFACE_REGIONS = {
-    "front": (-math.pi / 4.0, math.pi / 4.0, math.pi / 2.0),
-    "left": (math.pi / 4.0, 3.0 * math.pi / 4.0, 0.0),
-    "right": (-3.0 * math.pi / 4.0, -math.pi / 4.0, 0.0),
-}
+from .bin_wall_fit import fit_bin_wall, scan_to_ordered_points
 
 
-class BedSideAlignmentNode(Node):
-    """Estimate distance/yaw alignment to a nearby planar surface from LaserScan."""
+class BinWallAlignmentNode(Node):
+    """Fast lidar estimator for strafe-along-bin control."""
 
     def __init__(self) -> None:
-        super().__init__("bed_side_alignment_node")
+        super().__init__("bin_wall_alignment_node")
         self.declare_parameter("scan_topic", "/scan")
-        self.declare_parameter("alignment_topic", "simbiosys/bed_side_alignment")
+        self.declare_parameter(
+            "alignment_topic",
+            "simbiosys/bin_wall_alignment",
+        )
         self.declare_parameter("bed_id", "")
         self.declare_parameter("side", "")
-        self.declare_parameter("surface_region", "left")
+        self.declare_parameter("strafe_direction", "left")
         self.declare_parameter("target_distance_m", 0.35)
-        self.declare_parameter("min_range_m", 0.15)
-        self.declare_parameter("max_range_m", 4.0)
-        self.declare_parameter("roi_min_angle_rad", math.nan)
-        self.declare_parameter("roi_max_angle_rad", math.nan)
-        self.declare_parameter("desired_surface_angle_rad", math.nan)
-        self.declare_parameter("max_fit_error_m", 0.05)
-        self.declare_parameter("min_inliers", 8)
-        self.declare_parameter("publish_rate_hz", 10.0)
+        self.declare_parameter("min_range_m", 0.12)
+        self.declare_parameter("max_range_m", 2.0)
+        self.declare_parameter("scan_angle_offset_rad", -math.pi / 2.0)
+        self.declare_parameter("roi_min_angle_rad", math.radians(-60.0))
+        self.declare_parameter("roi_max_angle_rad", math.radians(60.0))
+        self.declare_parameter("desired_surface_angle_rad", math.pi / 2.0)
+        self.declare_parameter("cluster_jump_m", 0.05)
+        self.declare_parameter("max_fit_error_m", 0.025)
+        self.declare_parameter("min_inliers", 10)
+        self.declare_parameter("min_wall_length_m", 0.30)
+        self.declare_parameter("corner_endpoint_threshold_m", 0.10)
+        self.declare_parameter("max_yaw_error_rad", math.radians(20.0))
+        self.declare_parameter("publish_rate_hz", 20.0)
 
         self._latest_scan: LaserScan | None = None
         self._lock = threading.Lock()
         self._publisher = self.create_publisher(
-            BedSideAlignment,
+            BinWallAlignment,
             self._string_parameter("alignment_topic"),
             10,
         )
@@ -51,10 +52,10 @@ class BedSideAlignmentNode(Node):
             10,
         )
 
-        period = 1.0 / max(0.1, self._double_parameter("publish_rate_hz"))
+        period = 1.0 / max(1.0, self._double_parameter("publish_rate_hz"))
         self._timer = self.create_timer(period, self._publish_alignment)
         self.get_logger().info(
-            "Bed-side alignment node started: "
+            "Bin wall alignment node started: "
             f"scan={self._string_parameter('scan_topic')}, "
             f"alignment={self._string_parameter('alignment_topic')}"
         )
@@ -67,7 +68,7 @@ class BedSideAlignmentNode(Node):
         with self._lock:
             scan = self._latest_scan
 
-        msg = BedSideAlignment()
+        msg = BinWallAlignment()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = scan.header.frame_id if scan is not None else ""
         msg.bed_id = self._string_parameter("bed_id")
@@ -80,62 +81,50 @@ class BedSideAlignmentNode(Node):
             msg.distance_error_m = math.nan
             msg.yaw_error_rad = math.nan
             msg.confidence = 0.0
+            msg.wall_start_m = math.nan
+            msg.wall_end_m = math.nan
+            msg.endpoint_in_direction_m = math.nan
             msg.message = "waiting for LaserScan"
             self._publisher.publish(msg)
             return
 
-        roi_min, roi_max, desired_angle = self._surface_geometry()
-        points = scan_ranges_to_points(
+        points = scan_to_ordered_points(
             scan.ranges,
             scan.angle_min,
             scan.angle_increment,
             self._double_parameter("min_range_m"),
             self._double_parameter("max_range_m"),
-            roi_min,
-            roi_max,
+            self._double_parameter("roi_min_angle_rad"),
+            self._double_parameter("roi_max_angle_rad"),
+            self._double_parameter("scan_angle_offset_rad"),
         )
-        result = fit_surface_alignment(
+        result = fit_bin_wall(
             points,
-            desired_angle,
+            self._double_parameter("desired_surface_angle_rad"),
+            self._string_parameter("strafe_direction"),
             self._double_parameter("max_fit_error_m"),
             self._int_parameter("min_inliers"),
+            self._double_parameter("min_wall_length_m"),
+            self._double_parameter("cluster_jump_m"),
+            self._double_parameter("corner_endpoint_threshold_m"),
+            self._double_parameter("max_yaw_error_rad"),
         )
 
         msg.valid = result.valid
+        msg.corner_detected = result.corner_detected
         msg.distance_m = float(result.distance_m)
         msg.distance_error_m = float(result.distance_m - msg.target_distance_m)
         msg.yaw_error_rad = float(result.yaw_error_rad)
         msg.confidence = float(result.confidence)
-        msg.message = self._format_result_message(result.message, len(points), roi_min, roi_max)
-        self._publisher.publish(msg)
-
-    def _surface_geometry(self) -> tuple[float, float, float]:
-        region = self._string_parameter("surface_region").strip().lower()
-        roi_min, roi_max, desired_angle = SURFACE_REGIONS.get(region, SURFACE_REGIONS["front"])
-
-        configured_roi_min = self._double_parameter("roi_min_angle_rad")
-        configured_roi_max = self._double_parameter("roi_max_angle_rad")
-        configured_desired_angle = self._double_parameter("desired_surface_angle_rad")
-        if math.isfinite(configured_roi_min):
-            roi_min = configured_roi_min
-        if math.isfinite(configured_roi_max):
-            roi_max = configured_roi_max
-        if math.isfinite(configured_desired_angle):
-            desired_angle = configured_desired_angle
-        return roi_min, roi_max, desired_angle
-
-    def _format_result_message(
-        self,
-        result_message: str,
-        point_count: int,
-        roi_min: float,
-        roi_max: float,
-    ) -> str:
-        return (
-            f"{result_message}; roi=[{roi_min:.2f}, {roi_max:.2f}]rad, "
-            f"range=[{self._double_parameter('min_range_m'):.2f}, "
-            f"{self._double_parameter('max_range_m'):.2f}]m, points={point_count}"
+        msg.wall_length_m = float(result.wall_length_m)
+        msg.wall_start_m = float(result.wall_start_m)
+        msg.wall_end_m = float(result.wall_end_m)
+        msg.endpoint_in_direction_m = float(result.endpoint_in_direction_m)
+        msg.message = (
+            f"{result.message}; points={len(points)}, "
+            f"corner={str(result.corner_detected).lower()}"
         )
+        self._publisher.publish(msg)
 
     def _string_parameter(self, name: str) -> str:
         return self.get_parameter(name).get_parameter_value().string_value
@@ -149,7 +138,7 @@ class BedSideAlignmentNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = BedSideAlignmentNode()
+    node = BinWallAlignmentNode()
     try:
         rclpy.spin(node)
     finally:
