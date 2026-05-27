@@ -22,10 +22,10 @@ class AlignmentStrafeTestNode(Node):
         self.declare_parameter("cmd_vel_queue_depth", 1)
         self.declare_parameter("input_queue_depth", 1)
         self.declare_parameter("enable_motion", True)
-        self.declare_parameter("strafe_direction", "left")
+        self.declare_parameter("strafe_direction", "right")
         self.declare_parameter("strafe_speed_mps", 0.25)
-        self.declare_parameter("distance_gain", 0.35)
-        self.declare_parameter("yaw_gain", 3.0)
+        self.declare_parameter("distance_gain", 1.0) #0.2 for sim
+        self.declare_parameter("yaw_gain", 3.0)#1.0 for sim
         self.declare_parameter("distance_tolerance_m", 0.01)
         self.declare_parameter("yaw_tolerance_rad", math.radians(1.0))
         self.declare_parameter("strafe_distance_tolerance_m", 0.10)
