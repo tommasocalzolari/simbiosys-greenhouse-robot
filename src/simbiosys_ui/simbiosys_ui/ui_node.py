@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
         "typedPlantHealth": "simbiosys/plant_health",
         "flowerCounts": "/simbiosys/flower_counts",
         "bedObservation": "simbiosys/bed_observation",
+        "bedEnvironment": "/bed_environment",
         "battery": "/io/power/power_watcher",
     },
 }
@@ -149,6 +150,10 @@ INDEX_HTML = """<!doctype html>
       font-weight: 700;
       cursor: pointer;
       touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
     }
     button:disabled, select:disabled {
       cursor: not-allowed;
@@ -218,15 +223,100 @@ INDEX_HTML = """<!doctype html>
       font-size: 1.1rem;
     }
     .bed-card {
-      border: 1px solid var(--line);
+      border: 4px solid var(--line);
       border-radius: 8px;
       padding: 12px;
       background: #17201d;
       display: grid;
       gap: 8px;
+      min-height: 260px;
+      align-content: start;
     }
-    .bed-card.available { border-color: #4d7258; }
+    .bed-card.available, .bed-card.status-ok { border-color: #56c271; }
+    .bed-card.status-warning { border-color: #e1b94b; }
+    .bed-card.status-danger { border-color: #e2685d; }
     .bed-card.unavailable { border-color: #59615d; }
+    .bed-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .bed-metrics p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .bed-plot {
+      min-height: 150px;
+      border: 1px solid #34433d;
+      border-radius: 6px;
+      background: #101815;
+      display: grid;
+      grid-template-rows: repeat(2, minmax(58px, 1fr));
+      gap: 8px;
+      padding: 10px;
+    }
+    .bed-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .bed-row + .bed-row {
+      border-top: 1px dashed #34433d;
+      padding-top: 8px;
+    }
+    .plant-dot {
+      flex: 0 0 44px;
+      width: 44px;
+      height: 44px;
+      aspect-ratio: 1;
+      padding: 0;
+      border: 5px solid #56c271;
+      border-radius: 50%;
+      cursor: pointer;
+      appearance: none;
+      display: grid;
+      place-items: center;
+      color: #07110b;
+      font-size: 0.82rem;
+      font-weight: 800;
+      line-height: 1;
+      box-shadow: 0 0 0 2px #0c1110, 0 0 10px rgba(86, 194, 113, 0.35);
+    }
+    .plant-dot.status-warning { border-color: #e1b94b; }
+    .plant-dot.status-danger { border-color: #e2685d; }
+    .plant-dot.selected { outline: 2px solid #edf5ef; outline-offset: 3px; }
+    .plant-detail {
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .plant-detail strong { font-size: 1rem; }
+    .plant-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .plant-detail-grid p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .plant-detail-grid strong {
+      display: block;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    .plant-notes {
+      margin: 8px 0 0;
+      color: var(--muted);
+    }
+    .plant-detail-panel {
+      min-height: 118px;
+    }
     .teleop-main {
       display: grid;
       grid-template-columns: minmax(280px, 0.9fr) minmax(340px, 1.1fr);
@@ -268,6 +358,7 @@ INDEX_HTML = """<!doctype html>
       gap: 10px;
     }
     .pad { grid-template-rows: repeat(3, 74px); }
+    .pad button { touch-action: none; }
     .empty { visibility: hidden; }
     .candidate-list {
       display: grid;
@@ -351,9 +442,9 @@ INDEX_HTML = """<!doctype html>
         </div>
       </section>
       <section class="panel">
-        <div class="panel-body" id="plant-records">
-          <h2>Plant Records</h2>
-          <p>No plant records received</p>
+        <div class="panel-body plant-detail-panel" id="selected-plant-detail">
+          <h2>Flower Info</h2>
+          <p>Select a flower</p>
         </div>
       </section>
     </section>
@@ -491,6 +582,7 @@ INDEX_HTML = """<!doctype html>
       lastMapStamp: null,
       lastCandidateStamp: null,
       selectedMapTarget: null,
+      selectedPlantId: null,
       manualControlActive: false,
       safetyPaused: false,
       topics: {}
@@ -1011,35 +1103,141 @@ INDEX_HTML = """<!doctype html>
       document.getElementById("flower-count").textContent = report.totalFlowers;
       document.getElementById("last-scan").textContent = timeSince(report.lastScanTime);
       document.getElementById("next-action").textContent = report.nextAction || "Waiting for real data";
-      const records = document.getElementById("plant-records");
-      records.innerHTML = "<h2>Plant Records</h2>";
-      if (!plants.length) {
+    }
+    function numericValue(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+    function bedSeverity(bed) {
+      if (bed.bugs_detected === true) return "danger";
+      const co2 = numericValue(bed.co2);
+      const humidity = numericValue(bed.humidity);
+      let warnings = 0;
+      if (co2 != null) {
+        if (co2 < 250 || co2 > 2000) return "danger";
+        if (co2 < 400 || co2 > 1000) warnings += 1;
+      }
+      if (humidity != null) {
+        if (humidity < 30 || humidity > 90) return "danger";
+        if (humidity < 45 || humidity > 75) warnings += 1;
+      }
+      if (warnings >= 2) return "danger";
+      if (warnings === 1) return "warning";
+      return bed.available ? "ok" : "unavailable";
+    }
+    function plantSeverity(plant) {
+      if (plant.bug_detected) return "danger";
+      const health = String(plant.health || "").toLowerCase();
+      if (health === "critical" || health === "unhealthy") return "danger";
+      if (health === "warning" || health === "unknown") return "warning";
+      return "ok";
+    }
+    function plantColor(plant) {
+      const color = String(plant.color || "").toLowerCase();
+      if (color === "magenta") return "#d657c9";
+      if (color === "light_pink") return "#f0a9cc";
+      if (color === "white") return "#edf5ef";
+      return "#7eb7e6";
+    }
+    function plantSide(plant, index) {
+      const side = String(plant.side || "").toLowerCase();
+      if (side === "left" || side === "right") return side;
+      const x = plant.position && Number(plant.position.x);
+      if (Number.isFinite(x)) return x < 0.5 ? "left" : "right";
+      return index % 2 === 0 ? "left" : "right";
+    }
+    function plantDetailMetric(label, value) {
+      const item = document.createElement("p");
+      const strong = document.createElement("strong");
+      strong.textContent = value == null || value === "" ? "unavailable" : value;
+      item.appendChild(strong);
+      item.append(label);
+      return item;
+    }
+    function visiblePlantNotes(plant) {
+      return String(plant.notes || "")
+        .replace(/flower detected:\\s*[\\w_-]+/gi, "")
+        .replace(/\\s*side[:=](left|right)\\b/gi, "")
+        .trim();
+    }
+    function renderPlantDetail(plant, label) {
+      const detail = document.createElement("div");
+      detail.className = "plant-detail";
+      const name = document.createElement("strong");
+      name.textContent = label || plant.flower_id || "plant";
+      const grid = document.createElement("div");
+      grid.className = "plant-detail-grid";
+      grid.appendChild(plantDetailMetric("color", plant.color));
+      grid.appendChild(plantDetailMetric("confidence", plant.confidence == null ? null : `${Math.round(Number(plant.confidence) * 100)}%`));
+      grid.appendChild(plantDetailMetric("stage", plant.growth_stage));
+      grid.appendChild(plantDetailMetric("growth", plant.ready_for_harvest == null ? null : (plant.ready_for_harvest ? "ready" : "still growing")));
+      grid.appendChild(plantDetailMetric("health", plant.health));
+      grid.appendChild(plantDetailMetric("bed", plant.bed_id));
+      detail.appendChild(name);
+      detail.appendChild(grid);
+      const visibleNotes = visiblePlantNotes(plant);
+      if (visibleNotes) {
+        const notes = document.createElement("p");
+        notes.className = "plant-notes";
+        notes.textContent = visibleNotes;
+        detail.appendChild(notes);
+      }
+      return detail;
+    }
+    function orderedBedPlants(bed) {
+      const bedPlants = Array.isArray(bed.plants) ? bed.plants : [];
+      const topPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "left");
+      const bottomPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "right");
+      return [...topPlants, ...bottomPlants];
+    }
+    function plantDisplayLabel(bed, plant) {
+      const orderedPlants = orderedBedPlants(bed);
+      const index = Math.max(0, orderedPlants.findIndex((candidate) => candidate.flower_id === plant.flower_id));
+      return `${bed.bed_id}${String.fromCharCode(97 + (index % 26))}`;
+    }
+    function renderPlantRow(plot, plants, bed, data) {
+      const row = document.createElement("div");
+      row.className = "bed-row";
+      plants.slice(0, 10).forEach((plant) => {
+        const dot = document.createElement("button");
+        dot.type = "button";
+        dot.className = `plant-dot status-${plantSeverity(plant)} ${state.selectedPlantId === plant.flower_id ? "selected" : ""}`;
+        dot.style.background = plantColor(plant);
+        dot.title = plant.flower_id || "plant";
+        dot.textContent = plantDisplayLabel(bed, plant);
+        dot.addEventListener("click", () => {
+          state.selectedPlantId = plant.flower_id;
+          renderBeds(data);
+        });
+        row.appendChild(dot);
+      });
+      plot.appendChild(row);
+    }
+    function selectedPlantRecord(data) {
+      for (const bed of data.beds || []) {
+        const plant = (bed.plants || []).find((candidate) => candidate.flower_id === state.selectedPlantId);
+        if (plant) return {bed, plant};
+      }
+      const plant = (data.plants || []).find((candidate) => candidate.flower_id === state.selectedPlantId);
+      return plant ? {bed: {bed_id: plant.bed_id, plants: data.plants || []}, plant} : null;
+    }
+    function renderSelectedPlantDetail(data) {
+      const container = document.getElementById("selected-plant-detail");
+      container.innerHTML = "<h2>Flower Info</h2>";
+      const selected = selectedPlantRecord(data);
+      if (!selected) {
         const empty = document.createElement("p");
-        empty.textContent = "No plant records received";
-        records.appendChild(empty);
+        empty.textContent = "Select a flower";
+        container.appendChild(empty);
         return;
       }
-      plants.forEach((plant) => {
-        const row = document.createElement("div");
-        row.className = "control-row";
-        const name = plant.flower_id || "unidentified plant";
-        const parts = [];
-        if (plant.bed_id) parts.push(`bed ${plant.bed_id}`);
-        if (plant.health) parts.push(plant.health);
-        if (plant.color) parts.push(plant.color);
-        if (plant.growth_stage) parts.push(plant.growth_stage);
-        if (plant.bug_detected) parts.push("bugs detected");
-        if (plant.ready_for_harvest) parts.push("ready");
-        if (plant.confidence != null) parts.push(`${Math.round(Number(plant.confidence) * 100)}% confidence`);
-        if (plant.last_scan_time) parts.push(`last scan ${timeSince(plant.last_scan_time)}`);
-        row.innerHTML = `<span>${name}</span><strong>${parts.join(", ") || "real record received"}</strong>`;
-        records.appendChild(row);
-      });
+      container.appendChild(renderPlantDetail(selected.plant, plantDisplayLabel(selected.bed, selected.plant)));
     }
     function renderBeds(data) {
       const container = document.getElementById("bed-overview");
       container.innerHTML = "";
       const beds = data.beds || [];
+      const allPlants = data.plants || [];
       if (!beds.length) {
         const empty = document.createElement("p");
         empty.textContent = "Waiting for bed telemetry";
@@ -1048,15 +1246,29 @@ INDEX_HTML = """<!doctype html>
       }
       beds.forEach((bed) => {
         const card = document.createElement("article");
-        card.className = `bed-card ${bed.available ? "available" : "unavailable"}`;
+        const bedPlants = Array.isArray(bed.plants)
+          ? bed.plants
+          : allPlants.filter((plant) => String(plant.bed_id || "") === String(bed.bed_id || ""));
+        const severity = bedSeverity(bed);
+        card.className = `bed-card ${bed.available ? "available" : "unavailable"} status-${severity}`;
         card.innerHTML = `
           <h3>Bed ${bed.bed_id}</h3>
-          <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
-          <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
-          <p><strong>${bed.bugs_detected == null ? "unavailable" : (bed.bugs_detected ? "yes" : "no")}</strong>bugs detected</p>
+          <div class="bed-metrics">
+            <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
+            <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
+            <p><strong>${bed.bugs_detected == null ? "unavailable" : (bed.bugs_detected ? "bugs" : "no bugs")}</strong>bug detection</p>
+          </div>
+          <div class="bed-plot">
+          </div>
         `;
+        const plot = card.querySelector(".bed-plot");
+        const topPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "left");
+        const bottomPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "right");
+        renderPlantRow(plot, topPlants, bed, data);
+        renderPlantRow(plot, bottomPlants, bed, data);
         container.appendChild(card);
       });
+      renderSelectedPlantDetail(data);
     }
     function renderCandidates() {
       const list = document.getElementById("candidate-list");
@@ -1441,21 +1653,23 @@ class UiNode(Node):
         self.create_subscription(String, self._topics["plantHealthReport"], self._on_plant_health_report, 10)
         if self._topics.get("flowerCounts"):
             self.create_subscription(String, self._topics["flowerCounts"], self._on_flower_counts, 10)
+        if self._topics.get("bedEnvironment"):
+            self.create_subscription(String, self._topics["bedEnvironment"], self._on_bed_environment, 10)
         self.create_subscription(BatteryState, self._topics["battery"], self._on_battery, 10)
         if PlantHealth is not None:
-            self.create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
+            self._try_create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
         if BedObservation is not None:
-            self.create_subscription(BedObservation, self._topics["bedObservation"], self._on_bed_observation, 10)
+            self._try_create_subscription(BedObservation, self._topics["bedObservation"], self._on_bed_observation, 10)
         if MappingStatus is not None:
-            self.create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
+            self._try_create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
         if TaskStatus is not None:
-            self.create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
+            self._try_create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
         if self._topics.get("artifactCandidates"):
             self.create_subscription(String, self._topics["artifactCandidates"], self._on_artifact_candidates, 10)
 
-        self._task_mode_client = self.create_client(SetRobotMode, self._topics["setTaskMode"]) if SetRobotMode is not None else None
-        self._arm_pose_client = self.create_client(SendNamedArmPose, self._topics["sendNamedArmPose"]) if SendNamedArmPose is not None else None
-        self._behavior_client = ActionClient(self, ExecuteBehavior, self._topics["executeBehavior"]) if ExecuteBehavior is not None else None
+        self._task_mode_client = self._try_create_client(SetRobotMode, self._topics["setTaskMode"]) if SetRobotMode is not None else None
+        self._arm_pose_client = self._try_create_client(SendNamedArmPose, self._topics["sendNamedArmPose"]) if SendNamedArmPose is not None else None
+        self._behavior_client = self._try_create_action_client(ExecuteBehavior, self._topics["executeBehavior"]) if ExecuteBehavior is not None else None
         self._start_mapping_client = self.create_client(Trigger, self._topics["startMapping"]) if self._topics.get("startMapping") else None
         self._done_mapping_client = self.create_client(Trigger, self._topics["doneMapping"]) if self._topics.get("doneMapping") else None
         self._save_safe_map_client = self.create_client(Trigger, self._topics["saveSafeMap"]) if self._topics.get("saveSafeMap") else None
@@ -1467,6 +1681,27 @@ class UiNode(Node):
 
         self._log_startup_urls()
         self.get_logger().info(f"Publishing Twist to {self._topics['cmdVel']}; using real ROS/project data only")
+
+    def _try_create_subscription(self, msg_type, topic: str, callback, qos: int):
+        try:
+            return self.create_subscription(msg_type, topic, callback, qos)
+        except Exception as exc:
+            self.get_logger().warn(f"Disabled typed subscription {topic}: {exc}")
+            return None
+
+    def _try_create_client(self, srv_type, service: str):
+        try:
+            return self.create_client(srv_type, service)
+        except Exception as exc:
+            self.get_logger().warn(f"Disabled typed service client {service}: {exc}")
+            return None
+
+    def _try_create_action_client(self, action_type, action: str):
+        try:
+            return ActionClient(self, action_type, action)
+        except Exception as exc:
+            self.get_logger().warn(f"Disabled typed action client {action}: {exc}")
+            return None
 
     def _apply_topic_parameters(self) -> None:
         configured_raw_image = self.get_parameter("image_topic").get_parameter_value().string_value or None
@@ -1878,8 +2113,20 @@ class UiNode(Node):
             return {"ok": False, "message": "Unknown arm pose"}
         request = SendNamedArmPose.Request()
         request.pose_name = pose
-        self._arm_pose_client.call_async(request)
-        return {"ok": True, "message": f"Requested arm pose {pose}"}
+        future = self._arm_pose_client.call_async(request)
+        deadline = time.monotonic() + 3.0
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not future.done():
+            return {"ok": False, "message": f"Requested arm pose {pose}; waiting for backend response"}
+        try:
+            response = future.result()
+        except Exception as exc:
+            return {"ok": False, "message": f"Arm pose backend error: {exc}"}
+        return {
+            "ok": bool(response.accepted),
+            "message": response.message or f"Requested arm pose {pose}",
+        }
 
     def start_mapping(self, _payload) -> dict:
         if self._safety_paused:
@@ -2084,6 +2331,9 @@ class UiNode(Node):
             "notes": msg.notes,
             "position": {"x": msg.position.x, "y": msg.position.y, "z": msg.position.z},
         }
+        side = self._side_from_notes(msg.notes)
+        if side:
+            payload["side"] = side
         self._update_plant_from_payload(flower_id, payload)
         self._external_report = None
 
@@ -2109,16 +2359,57 @@ class UiNode(Node):
         self._flower_counts = counts
         self._external_report = None
 
+    def _on_bed_environment(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f"Ignoring invalid bed environment JSON: {exc}")
+            return
+        bed_id = str(payload.get("bed_id", "")).strip()
+        if not bed_id:
+            self.get_logger().warn("Ignoring bed environment JSON without bed_id")
+            return
+        bed = self._bed_observations.setdefault(
+            bed_id,
+            {
+                "bed_id": payload.get("bed_id"),
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": True,
+            },
+        )
+        bed["bed_id"] = payload.get("bed_id", bed.get("bed_id"))
+        bed["available"] = True
+        bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if "co2_ppm" in payload:
+            bed["co2"] = payload["co2_ppm"]
+        elif "co2" in payload:
+            bed["co2"] = payload["co2"]
+        if "humidity_percent" in payload:
+            bed["humidity"] = payload["humidity_percent"]
+        elif "humidity" in payload:
+            bed["humidity"] = payload["humidity"]
+        if "bugs_detected" in payload:
+            bed["bugs_detected"] = bool(payload["bugs_detected"])
+        if "side_counts" in payload and isinstance(payload["side_counts"], dict):
+            bed["side_counts"] = copy.deepcopy(payload["side_counts"])
+
     def _on_bed_observation(self, msg) -> None:
         bed_id = str(msg.bed_id)
-        self._bed_observations[bed_id] = {
-            "bed_id": msg.bed_id,
-            "co2": None,
-            "humidity": None,
-            "bugs_detected": None,
-            "available": True,
-            "last_seen": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
+        bed = self._bed_observations.setdefault(
+            bed_id,
+            {
+                "bed_id": msg.bed_id,
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": True,
+            },
+        )
+        bed["bed_id"] = msg.bed_id
+        bed["available"] = True
+        bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def _on_mapping_status(self, msg) -> None:
         self._mapping_status = {
@@ -2149,12 +2440,20 @@ class UiNode(Node):
 
     def _update_plant_from_payload(self, flower_id: str, payload: dict) -> None:
         plant = self._plants.setdefault(flower_id, {"flower_id": flower_id})
-        for key in ("bed_id", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
+        for key in ("bed_id", "side", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
             if key in payload:
                 plant[key] = payload[key]
         for key in ("bug_detected", "flower_detected", "ready_for_harvest"):
             if key in payload:
                 plant[key] = bool(payload[key])
+
+    def _side_from_notes(self, notes: str) -> str:
+        lowered = str(notes or "").lower()
+        if "side:left" in lowered or "side=left" in lowered:
+            return "left"
+        if "side:right" in lowered or "side=right" in lowered:
+            return "right"
+        return ""
 
     def _on_plant_health_report(self, msg: String) -> None:
         try:
@@ -2227,7 +2526,23 @@ class UiNode(Node):
         self._behavior_client.send_goal_async(goal)
 
     def _bed_payload(self) -> list[dict]:
-        return sorted(copy.deepcopy(list(self._bed_observations.values())), key=lambda bed: str(bed.get("bed_id", "")))
+        beds = copy.deepcopy(list(self._bed_observations.values()))
+        for bed in beds:
+            bed_plants = [
+                copy.deepcopy(plant)
+                for plant in self._plants.values()
+                if str(plant.get("bed_id", "")) == str(bed.get("bed_id", ""))
+            ]
+            bed["plants"] = bed_plants
+            if bed_plants:
+                bed["bugs_detected"] = any(bool(plant.get("bug_detected")) for plant in bed_plants)
+                side_counts = {"left": 0, "right": 0}
+                for index, plant in enumerate(bed_plants):
+                    side = str(plant.get("side") or ("left" if index % 2 == 0 else "right")).lower()
+                    if side in side_counts:
+                        side_counts[side] += 1
+                bed["side_counts"] = side_counts
+        return sorted(beds, key=lambda bed: str(bed.get("bed_id", "")))
 
     def _computed_report(self) -> dict:
         plants = list(self._plants.values())
