@@ -7,7 +7,7 @@ from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, Image
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Bool, Int32, String
 
 from simbiosys_interfaces.msg import BedObservation, DetectedTag
 
@@ -20,6 +20,7 @@ class AprilTagDetectionNode(Node):
         self.declare_parameter("camera_topic", "/camera/color/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("min_tag_area", 500.0)
+        self.declare_parameter("camera_distance_mm", 200.0)
 
         self._camera_topic = (
             self.get_parameter("camera_topic").get_parameter_value().string_value
@@ -33,6 +34,9 @@ class AprilTagDetectionNode(Node):
         self._min_tag_area = (
             self.get_parameter("min_tag_area").get_parameter_value().double_value
         )
+        self._camera_distance_mm = (
+            self.get_parameter("camera_distance_mm").get_parameter_value().double_value
+        )
 
         self._bridge = CvBridge()
         self._dictionary = cv2.aruco.getPredefinedDictionary(
@@ -40,6 +44,8 @@ class AprilTagDetectionNode(Node):
         )
         parameters = cv2.aruco.DetectorParameters()
         self._detector = cv2.aruco.ArucoDetector(self._dictionary, parameters)
+        self._bed_id_locked = False
+        self._locked_bed_id = -1
 
         self._tags_publisher = self.create_publisher(
             String,
@@ -63,10 +69,20 @@ class AprilTagDetectionNode(Node):
             self._on_image,
             10,
         )
+        self._reset_subscription = self.create_subscription(
+            Bool,
+            "/simbiosys/reset_counter",
+            self._on_reset_counter,
+            10,
+        )
 
         self.get_logger().info(
             f"AprilTag detection listening on {self._subscribed_camera_topic}, "
             "publishing simbiosys/bed_observation with legacy tag topics"
+        )
+        self.get_logger().info(
+            f"AprilTag operating distance: {self._camera_distance_mm:.1f}mm "
+            "(intended AprilTag scan distance)"
         )
 
     def _on_image(self, image_msg: Image | CompressedImage) -> None:
@@ -76,6 +92,14 @@ class AprilTagDetectionNode(Node):
 
         detections = self._detect_tags(frame)
         self._publish_detections(detections)
+
+    def _on_reset_counter(self, msg: Bool) -> None:
+        if not msg.data:
+            return
+
+        self._bed_id_locked = False
+        self._locked_bed_id = -1
+        self.get_logger().info("Reset locked AprilTag bed ID")
 
     def _image_msg_to_frame(
         self,
@@ -144,21 +168,36 @@ class AprilTagDetectionNode(Node):
         tags_msg.data = json.dumps({"tags": payload_tags})
         self._tags_publisher.publish(tags_msg)
 
+        detected_bed_id = self._get_largest_tag_id(detections)
+        if not self._bed_id_locked and detected_bed_id >= 0:
+            self._locked_bed_id = detected_bed_id
+            self._bed_id_locked = True
+            self.get_logger().info(f"Locked AprilTag bed ID: {self._locked_bed_id}")
+
         current_bed_msg = Int32()
+        if self._bed_id_locked:
+            current_bed_msg.data = self._locked_bed_id
+        else:
+            current_bed_msg.data = -1
+
         if detections:
-            closest_detection = max(
-                detections,
-                key=lambda detection: detection["area"],
-            )
-            current_bed_msg.data = int(closest_detection["id"])
             detected_ids = [detection["id"] for detection in detections]
             self.get_logger().info(f"Detected AprilTag IDs: {detected_ids}")
         else:
-            current_bed_msg.data = -1
             self.get_logger().info("Detected AprilTag IDs: []")
 
         self._current_bed_publisher.publish(current_bed_msg)
         self._publish_bed_observation(detections, current_bed_msg.data)
+
+    def _get_largest_tag_id(self, detections: list[dict[str, float | int]]) -> int:
+        if not detections:
+            return -1
+
+        largest_detection = max(
+            detections,
+            key=lambda detection: detection["area"],
+        )
+        return int(largest_detection["id"])
 
     def _publish_bed_observation(
         self,

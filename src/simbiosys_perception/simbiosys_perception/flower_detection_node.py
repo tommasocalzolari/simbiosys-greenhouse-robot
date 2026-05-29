@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import rclpy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+from std_msgs.msg import Bool
 
 import cv2
 import numpy as np
@@ -17,32 +19,52 @@ class FlowerDetection:
     top_pixel: tuple[int, int]
     color_label: str
     contour_area: float
+    confidence: float | None = None
+
+
+@dataclass
+class TrackedFlowerCenter:
+    x: float
+    y: float
+    color_label: str
 
 
 class FlowerDetectionNode(Node):
     """Detect Dahlia flowers and estimate their height from aligned depth."""
 
+    _MAX_BBOX_CENTER_Y_FRACTION = 0.35
+    _MAX_BBOX_SIZE_FRACTION = 0.5
+    _YOLO_FLOWER_LABELS = {
+        0: "magenta",
+        1: "white",
+        2: "light_pink",
+    }
+    _YOLO_BUG_CLASS_ID = 3
+    _TRACKING_DISTANCE_PX = 80.0
+
     def __init__(self) -> None:
         super().__init__("flower_detection_node")
+        default_model_path = "models/flower_model.pt"
         self.declare_parameter("image_topic", "/camera/color/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
         self.declare_parameter("depth_camera_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
-        self.declare_parameter("min_contour_area", 5000.0)
+        self.declare_parameter("use_yolo", True)
+        self.declare_parameter("model_path", default_model_path)
+        self.declare_parameter("min_contour_area", 500.0)
+        self.declare_parameter("max_contour_area", 50000.0)
         self.declare_parameter("morph_kernel_size", 7)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("depth_roi_radius_px", 4)
         self.declare_parameter("focal_length_y_px", 615.0)
         self.declare_parameter("camera_height_mm", 80.0)
         self.declare_parameter("box_height_mm", 190.0)
-        self.declare_parameter("camera_distance_mm", 300.0)
-        self.declare_parameter("magenta_hsv_lower", [145, 100, 80])
-        self.declare_parameter("magenta_hsv_upper", [172, 255, 255])
-        self.declare_parameter("light_pink_hsv_lower", [0, 15, 160])
-        self.declare_parameter("light_pink_hsv_upper", [20, 60, 255])
-        self.declare_parameter("white_hsv_lower", [20, 25, 180])
-        self.declare_parameter("white_hsv_upper", [35, 140, 255])
+        self.declare_parameter("camera_distance_mm", 400.0)
+        self.declare_parameter("magenta_hsv_lower", [165, 150, 70])
+        self.declare_parameter("magenta_hsv_upper", [180, 255, 180])
+        self.declare_parameter("light_hsv_lower", [0, 3, 175])
+        self.declare_parameter("light_hsv_upper", [180, 90, 255])
 
         self._image_topic = (
             self.get_parameter("image_topic").get_parameter_value().string_value
@@ -64,8 +86,15 @@ class FlowerDetectionNode(Node):
         output_topic = (
             self.get_parameter("output_topic").get_parameter_value().string_value
         )
+        self._use_yolo = self.get_parameter("use_yolo").get_parameter_value().bool_value
+        self._model_path = (
+            self.get_parameter("model_path").get_parameter_value().string_value
+        )
         self._min_contour_area = (
             self.get_parameter("min_contour_area").get_parameter_value().double_value
+        )
+        self._max_contour_area = (
+            self.get_parameter("max_contour_area").get_parameter_value().double_value
         )
         self._morph_kernel_size = (
             self.get_parameter("morph_kernel_size").get_parameter_value().integer_value
@@ -94,7 +123,14 @@ class FlowerDetectionNode(Node):
         self._bridge = CvBridge()
         self._latest_depth_m: np.ndarray | None = None
         self._principal_y_px: float | None = None
+        self._yolo_model = self._load_yolo_model() if self._use_yolo else None
+        self._tracked_flower_centers: list[TrackedFlowerCenter] = []
         self._publisher = self.create_publisher(FlowerData, output_topic, 10)
+        self._bug_detected_publisher = self.create_publisher(
+            Bool,
+            "/simbiosys/bug_detected",
+            10,
+        )
         self._debug_image_publisher = self.create_publisher(
             Image,
             "/simbiosys/flower_debug_image",
@@ -124,10 +160,15 @@ class FlowerDetectionNode(Node):
             f"Flower detection listening on color={self._subscribed_image_topic}, "
             f"depth={self._depth_topic}, publishing {output_topic}"
         )
+        detection_backend = "YOLOv8" if self._yolo_model is not None else "HSV"
+        self.get_logger().info(
+            f"Flower detection backend={detection_backend}, model_path={self._model_path}"
+        )
         self.get_logger().info(
             f"Flower height geometry camera_height={self._camera_height_mm:.1f}mm, "
             f"box_height={self._box_height_mm:.1f}mm, "
-            f"camera_distance={self._camera_distance_mm:.1f}mm"
+            f"camera_distance={self._camera_distance_mm:.1f}mm "
+            "(intended flower scan distance)"
         )
 
     def _on_camera_info(self, camera_info_msg: CameraInfo) -> None:
@@ -156,11 +197,142 @@ class FlowerDetectionNode(Node):
         if frame is None:
             return
 
-        detection = self._detect_flower(frame)
-        height_cm = self._estimate_height_cm(detection, frame.shape)
-        msg = self._build_message(detection, height_cm, frame.shape)
-        self._publisher.publish(msg)
-        self._publish_debug_image(frame, detection, height_cm, image_msg)
+        detections, bug_detected = self._detect_frame(frame)
+        if bug_detected:
+            self._publish_bug_detected()
+
+        height_by_detection = [
+            self._estimate_height_cm(detection, frame.shape)
+            for detection in detections
+        ]
+
+        if detections:
+            for detection, height_cm in zip(detections, height_by_detection):
+                msg = self._build_message(detection, height_cm, frame.shape)
+                self._publisher.publish(msg)
+        else:
+            self._publisher.publish(self._build_message(None, None, frame.shape))
+
+        self._publish_debug_image(frame, detections, height_by_detection, image_msg)
+
+    def _load_yolo_model(self):
+        model_path = Path(self._model_path).expanduser()
+        if not model_path.is_absolute():
+            model_path = Path(__file__).parent / model_path
+
+        if not model_path.exists():
+            self.get_logger().warning(
+                f"YOLO model not found at {model_path}; falling back to HSV detection"
+            )
+            return None
+
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            self.get_logger().warning(
+                f"ultralytics is not installed ({exc}); falling back to HSV detection"
+            )
+            return None
+
+        try:
+            return YOLO(str(model_path))
+        except Exception as exc:  # noqa: BLE001 - keep node alive if model loading fails.
+            self.get_logger().warning(
+                f"Could not load YOLO model from {model_path}: {exc}; "
+                "falling back to HSV detection"
+            )
+            return None
+
+    def _detect_frame(self, frame: np.ndarray) -> tuple[list[FlowerDetection], bool]:
+        if self._use_yolo and self._yolo_model is not None:
+            return self._detect_with_yolo(frame)
+
+        return self._detect_flowers_hsv(frame), False
+
+    def _detect_with_yolo(self, frame: np.ndarray) -> tuple[list[FlowerDetection], bool]:
+        results = self._yolo_model.predict(frame, conf=0.4, iou=0.5, verbose=False)
+        if not results:
+            return [], False
+
+        detections: list[FlowerDetection] = []
+        bug_detected = False
+        boxes = results[0].boxes
+        if boxes is None:
+            return detections, bug_detected
+
+        for box in boxes:
+            class_id = int(box.cls[0])
+            if class_id == self._YOLO_BUG_CLASS_ID:
+                bug_detected = True
+                continue
+
+            color_label = self._YOLO_FLOWER_LABELS.get(class_id)
+            if color_label is None:
+                continue
+
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            x = max(0, int(round(x1)))
+            y = max(0, int(round(y1)))
+            width = max(1, int(round(x2 - x1)))
+            height = max(1, int(round(y2 - y1)))
+            confidence = float(box.conf[0]) if box.conf is not None else None
+            top_pixel = (int(round(x + width / 2.0)), y)
+            detections.append(
+                FlowerDetection(
+                    bbox=(x, y, width, height),
+                    top_pixel=top_pixel,
+                    color_label=color_label,
+                    contour_area=float(width * height),
+                    confidence=confidence,
+                )
+            )
+
+        detections = sorted(
+            detections,
+            key=lambda detection: detection.confidence
+            if detection.confidence is not None
+            else detection.contour_area,
+            reverse=True,
+        )
+        self._update_tracked_flower_centers(detections)
+        return detections, bug_detected
+
+    def _publish_bug_detected(self) -> None:
+        msg = Bool()
+        msg.data = True
+        self._bug_detected_publisher.publish(msg)
+
+    def _update_tracked_flower_centers(
+        self,
+        detections: list[FlowerDetection],
+    ) -> None:
+        for detection in detections:
+            x, y, width, height = detection.bbox
+            center_x = x + width / 2.0
+            center_y = y + height / 2.0
+
+            matched_flower = None
+            for tracked_flower in self._tracked_flower_centers:
+                distance_px = float(
+                    np.hypot(center_x - tracked_flower.x, center_y - tracked_flower.y)
+                )
+                if distance_px <= self._TRACKING_DISTANCE_PX:
+                    matched_flower = tracked_flower
+                    break
+
+            if matched_flower is None:
+                self._tracked_flower_centers.append(
+                    TrackedFlowerCenter(center_x, center_y, detection.color_label)
+                )
+                self.get_logger().info(
+                    f"New {detection.color_label} flower tracked at "
+                    f"center=({center_x:.1f},{center_y:.1f}); "
+                    f"total_tracked={len(self._tracked_flower_centers)}"
+                )
+            else:
+                matched_flower.x = center_x
+                matched_flower.y = center_y
+                matched_flower.color_label = detection.color_label
 
     def _image_msg_to_frame(
         self,
@@ -179,28 +351,27 @@ class FlowerDetectionNode(Node):
             self.get_logger().warning(f"Could not convert camera image: {exc}")
             return None
 
-    def _detect_flower(self, frame: np.ndarray) -> FlowerDetection | None:
+    def _detect_flowers_hsv(self, frame: np.ndarray) -> list[FlowerDetection]:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        best_detection: FlowerDetection | None = None
+        detections = []
         for color_label, mask in self._build_color_masks(hsv):
-            detection = self._find_best_detection_for_mask(mask, hsv, color_label)
-            if detection is None:
-                continue
-            if (
-                best_detection is None
-                or detection.contour_area > best_detection.contour_area
-            ):
-                best_detection = detection
+            detections.extend(self._find_detections_for_mask(mask, color_label))
 
-        return best_detection
+        detections = sorted(
+            detections,
+            key=lambda detection: detection.contour_area,
+            reverse=True,
+        )
+        self._update_tracked_flower_centers(detections)
+        return detections
 
     def _build_color_masks(
         self,
         hsv: np.ndarray,
     ) -> list[tuple[str, np.ndarray]]:
         masks = []
-        for color_label in ("magenta", "light_pink", "white"):
+        for color_label in ("magenta", "light"):
             lower, upper = self._get_hsv_bounds(color_label)
             mask = cv2.inRange(hsv, lower, upper)
             masks.append((color_label, self._clean_mask(mask)))
@@ -221,7 +392,7 @@ class FlowerDetectionNode(Node):
             return [0, 0, 0]
 
         return [
-            max(0, min(179, int(values[0]))),
+            max(0, min(180, int(values[0]))),
             max(0, min(255, int(values[1]))),
             max(0, min(255, int(values[2]))),
         ]
@@ -232,47 +403,53 @@ class FlowerDetectionNode(Node):
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    def _find_best_detection_for_mask(
+    def _find_detections_for_mask(
         self,
         mask: np.ndarray,
-        _hsv: np.ndarray,
         color_label: str,
-    ) -> FlowerDetection | None:
+    ) -> list[FlowerDetection]:
         contours, _ = cv2.findContours(
             mask,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE,
         )
-        valid_contours = [
-            contour
-            for contour in contours
-            if cv2.contourArea(contour) > self._min_contour_area
-        ]
-        if not valid_contours:
+        detections = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < self._min_contour_area or area > self._max_contour_area:
+                continue
+            detection = self._detection_from_contour(
+                contour,
+                color_label,
+                mask.shape[0],
+                mask.shape[1],
+            )
+            if detection is not None:
+                detections.append(detection)
+
+        return detections
+
+    def _detection_from_contour(
+        self,
+        contour: np.ndarray,
+        color_label: str,
+        image_height: int,
+        image_width: int,
+    ) -> FlowerDetection | None:
+        x, y, width, height = cv2.boundingRect(contour)
+        center_y = y + height / 2.0
+        if center_y >= image_height * self._MAX_BBOX_CENTER_Y_FRACTION:
+            return None
+        if width > image_width * self._MAX_BBOX_SIZE_FRACTION:
+            return None
+        if height > image_height * self._MAX_BBOX_SIZE_FRACTION:
             return None
 
-        combined_points = np.vstack(valid_contours)
-        combined_area = float(
-            sum(cv2.contourArea(contour) for contour in valid_contours)
-        )
-        return self._detection_from_combined_contours(
-            combined_points,
-            color_label,
-            combined_area,
-        )
-
-    def _detection_from_combined_contours(
-        self,
-        combined_points: np.ndarray,
-        color_label: str,
-        contour_area: float,
-    ) -> FlowerDetection | None:
-        x, y, width, height = cv2.boundingRect(combined_points)
         aspect_ratio = width / float(height)
         if aspect_ratio < 0.4 or aspect_ratio > 2.5:
             return None
 
-        points = combined_points.reshape(-1, 2)
+        points = contour.reshape(-1, 2)
         top_y = int(points[:, 1].min())
         top_candidates = points[points[:, 1] == top_y]
         top_x = int(np.median(top_candidates[:, 0]))
@@ -280,7 +457,7 @@ class FlowerDetectionNode(Node):
             bbox=(x, y, width, height),
             top_pixel=(top_x, top_y),
             color_label=color_label,
-            contour_area=contour_area,
+            contour_area=float(cv2.contourArea(contour)),
         )
 
     def _depth_image_to_meters(
@@ -381,7 +558,10 @@ class FlowerDetectionNode(Node):
         height_value = height_cm if height_cm is not None else 0.0
 
         msg.detected = True
-        msg.confidence = min(1.0, bbox_area / frame_area * 20.0)
+        if detection.confidence is not None:
+            msg.confidence = float(max(0.0, min(1.0, detection.confidence)))
+        else:
+            msg.confidence = min(1.0, bbox_area / frame_area * 20.0)
         msg.position = Point(x=center_x, y=center_y, z=height_value)
         msg.message = (
             f"color={detection.color_label}; bbox=({x},{y},{width},{height}); "
@@ -393,12 +573,12 @@ class FlowerDetectionNode(Node):
     def _publish_debug_image(
         self,
         frame: np.ndarray,
-        detection: FlowerDetection | None,
-        height_cm: float | None,
+        detections: list[FlowerDetection],
+        height_by_detection: list[float | None],
         source_msg: Image | CompressedImage,
     ) -> None:
         debug_frame = frame.copy()
-        if detection is not None:
+        for detection, height_cm in zip(detections, height_by_detection):
             x, y, width, height = detection.bbox
             center = (int(x + width / 2.0), int(y + height / 2.0))
             top_pixel = detection.top_pixel
