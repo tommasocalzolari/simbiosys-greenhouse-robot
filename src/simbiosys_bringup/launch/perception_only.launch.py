@@ -30,5 +30,11 @@ def generate_launch_description():
                 name="bug_detection_node",
                 output="screen",
             ),
+            Node(
+                package="simbiosys_perception",
+                executable="apriltag_detection_node",
+                name="apriltag_detection_node",
+                output="screen",
+            ),
         ]
     )
