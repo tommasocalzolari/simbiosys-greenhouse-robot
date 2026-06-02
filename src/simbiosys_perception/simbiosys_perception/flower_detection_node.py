@@ -60,7 +60,7 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("focal_length_y_px", 615.0)
         self.declare_parameter("camera_height_mm", 80.0)
         self.declare_parameter("box_height_mm", 190.0)
-        self.declare_parameter("camera_distance_mm", 400.0)
+        self.declare_parameter("camera_distance_mm", 450.0)
         self.declare_parameter("magenta_hsv_lower", [165, 150, 70])
         self.declare_parameter("magenta_hsv_upper", [180, 255, 180])
         self.declare_parameter("light_hsv_lower", [0, 3, 175])
@@ -270,13 +270,13 @@ class FlowerDetectionNode(Node):
             if color_label is None:
                 continue
 
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            x = max(0, int(round(x1)))
-            y = max(0, int(round(y1)))
-            width = max(1, int(round(x2 - x1)))
-            height = max(1, int(round(y2 - y1)))
+            x_center, y_center, box_width, box_height = box.xywh[0].cpu().numpy()
+            x = max(0, int(round(x_center - box_width / 2.0)))
+            y = max(0, int(round(y_center - box_height / 2.0)))
+            width = max(1, int(round(box_width)))
+            height = max(1, int(round(box_height)))
             confidence = float(box.conf[0]) if box.conf is not None else None
-            top_pixel = (int(round(x + width / 2.0)), y)
+            top_pixel = (int(round(x_center)), y)
             detections.append(
                 FlowerDetection(
                     bbox=(x, y, width, height),
@@ -476,36 +476,43 @@ class FlowerDetectionNode(Node):
         detection: FlowerDetection | None,
         color_shape: tuple[int, int, int],
     ) -> float | None:
-        if detection is None or self._latest_depth_m is None:
+        if detection is None:
             return None
         if self._focal_length_y_px <= 0.0:
             self.get_logger().warning("focal_length_y_px must be greater than zero")
             return None
 
-        depth = self._latest_depth_m
-        depth_height, depth_width = depth.shape[:2]
         color_height, color_width = color_shape[:2]
-        scale_x = depth_width / color_width
-        scale_y = depth_height / color_height
-
         top_x, top_y = detection.top_pixel
+        depth_m = self._camera_distance_mm / 1000.0
+        top_pixel_y = top_y
 
-        top_depth_x = int(round(top_x * scale_x))
-        top_depth_y = int(round(top_y * scale_y))
+        if self._latest_depth_m is not None:
+            depth = self._latest_depth_m
+            depth_height, depth_width = depth.shape[:2]
+            scale_x = depth_width / color_width
+            scale_y = depth_height / color_height
 
-        top_depth_m = self._sample_depth_m(depth, top_depth_x, top_depth_y)
-        if top_depth_m is None:
-            return None
+            top_depth_x = int(round(top_x * scale_x))
+            top_depth_y = int(round(top_y * scale_y))
+            top_depth_m = self._sample_depth_m(depth, top_depth_x, top_depth_y)
+            if top_depth_m is not None:
+                depth_m = top_depth_m
+
+            top_pixel_y = top_depth_y
+            fallback_principal_y = depth_height / 2.0
+        else:
+            fallback_principal_y = color_height / 2.0
 
         principal_y = self._principal_y_px
         if principal_y is None:
-            principal_y = depth_height / 2.0
+            principal_y = fallback_principal_y
 
-        # Geometry: camera is 8 cm above ground, horizontal, looking at a box
-        # from 30 cm away; the box top is 19 cm above ground.
-        top_y_m = (top_depth_y - principal_y) * top_depth_m / self._focal_length_y_px
+        top_y_offset_m = (
+            (top_pixel_y - principal_y) * depth_m / self._focal_length_y_px
+        )
         flower_top_height_above_ground_mm = self._camera_height_mm - (
-            top_y_m * 1000.0
+            top_y_offset_m * 1000.0
         )
         flower_height_above_box_mm = (
             flower_top_height_above_ground_mm - self._box_height_mm
