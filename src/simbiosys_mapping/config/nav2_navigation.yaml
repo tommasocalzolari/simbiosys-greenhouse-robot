@@ -110,7 +110,7 @@ controller_server:
       min_speed_xy: 0.0
       max_speed_xy: 0.24       # above linear deadband but still slow for a small map
       min_speed_theta: 0.40     # observed minimum angular command needed to actually rotate
-      acc_lim_x: 0.4          #0.5  
+      acc_lim_x: 0.4          #0.5
       acc_lim_y: 0.0
       acc_lim_theta: 1.3       # stronger angular acceleration for initial turns/corners
       decel_lim_x: -0.35        # allow braking/recovery without being too abrupt
