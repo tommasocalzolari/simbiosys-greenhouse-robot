@@ -32,8 +32,6 @@ class TrackedFlowerCenter:
 class FlowerDetectionNode(Node):
     """Detect Dahlia flowers and estimate their height from aligned depth."""
 
-    _MAX_BBOX_CENTER_Y_FRACTION = 0.35
-    _MAX_BBOX_SIZE_FRACTION = 0.5
     _YOLO_FLOWER_LABELS = {
         0: "magenta",
         1: "white",
