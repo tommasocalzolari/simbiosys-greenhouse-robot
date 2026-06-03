@@ -18,6 +18,7 @@ from simbiosys_interfaces.msg import (
 class TrackedFlower:
     color: str
     last_x: float
+    last_y: float
     counted: bool = True
     frames_unseen: int = 0
 
@@ -58,6 +59,12 @@ class PlantAnalysisNode(Node):
             10,
         )
         self.create_subscription(
+            Bool,
+            "/simbiosys/bug_detected",
+            self._on_bug_detected,
+            10,
+        )
+        self.create_subscription(
             Int32,
             "/simbiosys/current_bed_id",
             self._on_current_bed_id,
@@ -71,12 +78,11 @@ class PlantAnalysisNode(Node):
         )
         self._latest_flower_data: FlowerData | None = None
         self._current_bed_id = -1
+        self._bug_detected = False
+        self._bed_flower_counts: dict[int, dict[str, int]] = {}
+        self._bed_tracked_flowers: dict[int, list[TrackedFlower]] = {}
         self._tracked_flowers: list[TrackedFlower] = []
-        self._flower_counts = {
-            "magenta": 0,
-            "light_pink": 0,
-            "white": 0,
-        }
+        self._flower_counts = self._empty_flower_counts()
         self._timer = self.create_timer(5.0, self._on_timer)
         self.declare_parameter("default_bed_id", "A")
         self.declare_parameter("default_flower_id", "A1")
@@ -86,7 +92,7 @@ class PlantAnalysisNode(Node):
             self._publish_flower_counts,
         )
 
-        # TODO: Add bug detection and maturity estimation.
+        # TODO: Add maturity estimation.
         self.get_logger().info("Plant analysis placeholder started")
 
     def _on_flower_data(self, msg: FlowerData) -> None:
@@ -101,23 +107,31 @@ class PlantAnalysisNode(Node):
             "tracking_threshold"
         ).get_parameter_value().integer_value
         flower_x = msg.position.x
+        flower_y = msg.position.y
+        flower_color = msg.label
 
         matched_flower = None
         for tracked_flower in self._tracked_flowers:
-            if abs(flower_x - tracked_flower.last_x) < tracking_threshold:
+            distance_px = (
+                (flower_x - tracked_flower.last_x) ** 2
+                + (flower_y - tracked_flower.last_y) ** 2
+            ) ** 0.5
+            if distance_px < tracking_threshold:
                 matched_flower = tracked_flower
                 break
 
-        for tracked_flower in self._tracked_flowers:
-            if tracked_flower is matched_flower:
-                tracked_flower.last_x = flower_x
-                tracked_flower.frames_unseen = 0
-            else:
-                tracked_flower.frames_unseen += 1
-
-        if matched_flower is None:
-            flower_color = msg.label
-            self._tracked_flowers.append(TrackedFlower(flower_color, flower_x))
+        if matched_flower is not None:
+            match_status = (
+                f"matched existing {matched_flower.color} "
+                f"at center=({matched_flower.last_x:.1f},"
+                f"{matched_flower.last_y:.1f})"
+            )
+            matched_flower.last_x = flower_x
+            matched_flower.last_y = flower_y
+            matched_flower.frames_unseen = 0
+        else:
+            match_status = "created new tracked flower"
+            self._tracked_flowers.append(TrackedFlower(flower_color, flower_x, flower_y))
             if flower_color in self._flower_counts:
                 self._flower_counts[flower_color] += 1
             else:
@@ -126,6 +140,26 @@ class PlantAnalysisNode(Node):
                 )
 
         self._prune_unseen_flowers()
+        self.get_logger().info(
+            f"FlowerData color={flower_color} x={flower_x:.1f}: {match_status}"
+        )
+        self._log_tracked_flowers()
+
+    def _log_tracked_flowers(self) -> None:
+        if not self._tracked_flowers:
+            self.get_logger().info("Tracked flowers: []")
+            return
+
+        tracked_state = [
+            (
+                f"{index}:color={tracked_flower.color},"
+                f"center=({tracked_flower.last_x:.1f},"
+                f"{tracked_flower.last_y:.1f}),"
+                f"unseen={tracked_flower.frames_unseen}"
+            )
+            for index, tracked_flower in enumerate(self._tracked_flowers)
+        ]
+        self.get_logger().info(f"Tracked flowers: [{'; '.join(tracked_state)}]")
 
     def _age_tracked_flowers(self) -> None:
         for tracked_flower in self._tracked_flowers:
@@ -144,20 +178,58 @@ class PlantAnalysisNode(Node):
 
     def _on_reset_counter(self, msg: Bool) -> None:
         if msg.data:
-            self._tracked_flowers.clear()
-            for color in self._flower_counts:
-                self._flower_counts[color] = 0
-            self.get_logger().info("Reset flower counters")
+            self._tracked_flowers = []
+            self._flower_counts = self._empty_flower_counts()
+            self._save_current_bed_state()
+            self.get_logger().info(
+                f"Reset flower counters for bed {self._current_bed_id}"
+            )
+
+    def _on_bug_detected(self, msg: Bool) -> None:
+        self._bug_detected = bool(msg.data)
 
     def _on_current_bed_id(self, msg: Int32) -> None:
-        self._current_bed_id = msg.data
+        self._set_current_bed_id(msg.data)
 
     def _on_bed_observation(self, msg: BedObservation) -> None:
-        self._current_bed_id = msg.bed_id
+        self._set_current_bed_id(msg.bed_id)
+
+    def _set_current_bed_id(self, bed_id: int) -> None:
+        if bed_id == self._current_bed_id:
+            return
+
+        old_bed_id = self._current_bed_id
+        self._save_current_bed_state()
+        self._current_bed_id = bed_id
+        self._load_current_bed_state()
+        self.get_logger().info(
+            f"Switched flower counters from bed {old_bed_id} to bed {bed_id}"
+        )
+
+    def _save_current_bed_state(self) -> None:
+        self._bed_flower_counts[self._current_bed_id] = dict(self._flower_counts)
+        self._bed_tracked_flowers[self._current_bed_id] = list(self._tracked_flowers)
+
+    def _load_current_bed_state(self) -> None:
+        self._flower_counts = self._empty_flower_counts()
+        self._flower_counts.update(
+            self._bed_flower_counts.get(self._current_bed_id, {})
+        )
+        self._tracked_flowers = list(
+            self._bed_tracked_flowers.get(self._current_bed_id, [])
+        )
+
+    def _empty_flower_counts(self) -> dict[str, int]:
+        return {
+            "magenta": 0,
+            "light": 0,
+            "white": 0,
+            "light_pink": 0,
+        }
 
     def _on_timer(self) -> None:
         analysis = PlantAnalysis()
-        analysis.bugs_detected = False
+        analysis.bugs_detected = self._bug_detected
         analysis.fully_grown = False
 
         if self._latest_flower_data is None:
@@ -186,10 +258,11 @@ class PlantAnalysisNode(Node):
         msg.color = analysis.color or "unknown"
         msg.bug_detected = bool(analysis.bugs_detected)
         msg.flower_detected = bool(analysis.plant_detected)
+        harvest_height_cm = (
+            self.get_parameter("harvest_height_cm").get_parameter_value().double_value
+        )
         msg.ready_for_harvest = bool(
-            analysis.fully_grown
-            or analysis.height
-            >= self.get_parameter("harvest_height_cm").get_parameter_value().double_value
+            analysis.fully_grown or analysis.height >= harvest_height_cm
         )
         msg.health = self._health_label(analysis)
         msg.growth_stage = "mature" if msg.ready_for_harvest else "growing"
@@ -222,14 +295,16 @@ class PlantAnalysisNode(Node):
     def _publish_flower_counts(self) -> None:
         flower_counts = {
             "bed_id": self._current_bed_id,
-            "magenta": self._flower_counts["magenta"],
-            "light_pink": self._flower_counts["light_pink"],
-            "white": self._flower_counts["white"],
+            "magenta": self._flower_counts.get("magenta", 0),
+            "light": self._flower_counts.get("light", 0),
+            "white": self._flower_counts.get("white", 0),
+            "light_pink": self._flower_counts.get("light_pink", 0),
         }
         flower_counts["total"] = (
             flower_counts["magenta"]
-            + flower_counts["light_pink"]
+            + flower_counts["light"]
             + flower_counts["white"]
+            + flower_counts["light_pink"]
         )
 
         msg = String()
