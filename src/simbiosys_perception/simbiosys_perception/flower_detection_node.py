@@ -437,13 +437,6 @@ class FlowerDetectionNode(Node):
         image_width: int,
     ) -> FlowerDetection | None:
         x, y, width, height = cv2.boundingRect(contour)
-        center_y = y + height / 2.0
-        if center_y >= image_height * self._MAX_BBOX_CENTER_Y_FRACTION:
-            return None
-        if width > image_width * self._MAX_BBOX_SIZE_FRACTION:
-            return None
-        if height > image_height * self._MAX_BBOX_SIZE_FRACTION:
-            return None
 
         aspect_ratio = width / float(height)
         if aspect_ratio < 0.4 or aspect_ratio > 2.5:
