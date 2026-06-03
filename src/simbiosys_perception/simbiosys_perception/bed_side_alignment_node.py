@@ -11,7 +11,7 @@ from .surface_fit import fit_surface_alignment, scan_ranges_to_points
 
 
 SURFACE_REGIONS = {
-    "front": (-math.pi / 4.0, math.pi / 4.0, math.pi / 2.0),
+    "front": (-math.radians(45.0), math.radians(45.0), math.pi / 2.0),
     "left": (math.pi / 4.0, 3.0 * math.pi / 4.0, 0.0),
     "right": (-3.0 * math.pi / 4.0, -math.pi / 4.0, 0.0),
 }
@@ -33,6 +33,7 @@ class BedSideAlignmentNode(Node):
         self.declare_parameter("roi_min_angle_rad", math.nan)
         self.declare_parameter("roi_max_angle_rad", math.nan)
         self.declare_parameter("desired_surface_angle_rad", math.nan)
+        self.declare_parameter("scan_angle_offset_deg", 90.0)
         self.declare_parameter("max_fit_error_m", 0.05)
         self.declare_parameter("min_inliers", 8)
         self.declare_parameter("publish_rate_hz", 10.0)
@@ -93,6 +94,7 @@ class BedSideAlignmentNode(Node):
             self._double_parameter("max_range_m"),
             roi_min,
             roi_max,
+            self._scan_angle_offset_rad(),
         )
         result = fit_surface_alignment(
             points,
@@ -133,9 +135,13 @@ class BedSideAlignmentNode(Node):
     ) -> str:
         return (
             f"{result_message}; roi=[{roi_min:.2f}, {roi_max:.2f}]rad, "
+            f"scan_offset={self._scan_angle_offset_rad():.2f}rad, "
             f"range=[{self._double_parameter('min_range_m'):.2f}, "
             f"{self._double_parameter('max_range_m'):.2f}]m, points={point_count}"
         )
+
+    def _scan_angle_offset_rad(self) -> float:
+        return math.radians(self._double_parameter("scan_angle_offset_deg"))
 
     def _string_parameter(self, name: str) -> str:
         return self.get_parameter(name).get_parameter_value().string_value

@@ -30,6 +30,8 @@ setup(
             "bed_side_alignment_node = simbiosys_perception.bed_side_alignment_node:main",
             "alignment_strafe_test_node = "
             "simbiosys_perception.alignment_strafe_test_node:main",
+            "sequential_alignment_strafe_test_node = "
+            "simbiosys_perception.sequential_alignment_strafe_test_node:main",
         ],
     },
 )

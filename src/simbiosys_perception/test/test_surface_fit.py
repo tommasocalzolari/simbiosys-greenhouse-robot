@@ -19,6 +19,24 @@ def test_fit_front_surface_parallel_to_y_axis() -> None:
     assert result.confidence > 0.9
 
 
+def test_fit_prefers_dominant_bed_side_over_corner_points() -> None:
+    bed_side = [Point2D(0.5, y / 100.0) for y in range(-45, 46, 5)]
+    bed_end = [Point2D(x / 100.0, 0.45) for x in range(55, 96, 5)]
+    points = bed_side + bed_end
+
+    result = fit_surface_alignment(
+        points,
+        desired_surface_angle_rad=math.pi / 2.0,
+        max_fit_error_m=0.02,
+        min_inliers=8,
+    )
+
+    assert result.valid
+    assert result.distance_m == pytest_approx(0.5)
+    assert result.yaw_error_rad == pytest_approx(0.0)
+    assert result.inlier_count == len(bed_side)
+
+
 def test_fit_rejects_scattered_points() -> None:
     points = [
         Point2D(0.2, -0.4),
