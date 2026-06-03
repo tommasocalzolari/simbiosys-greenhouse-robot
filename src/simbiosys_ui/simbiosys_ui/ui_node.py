@@ -402,7 +402,6 @@ INDEX_HTML = """<!doctype html>
       </div>
       <div class="topline">
         <button id="safety-toggle" class="safety">STOP</button>
-        <button id="go-home" disabled>Go Home</button>
         <span class="status-pill" id="connection">Starting</span>
         <span class="status-pill" id="battery">Battery --</span>
         <button id="to-teleop">Teleop / Camera</button>
@@ -426,6 +425,7 @@ INDEX_HTML = """<!doctype html>
                 <button id="set-initial-pose" disabled>Set Start Pose</button>
                 <button id="navigate-target" disabled>Navigate</button>
                 <button id="cancel-navigation" disabled>Cancel Navigation</button>
+                <button id="go-home" disabled>Go Home</button>
               </div>
             </div>
             <p id="navigation-message">Navigation backend unavailable</p>
