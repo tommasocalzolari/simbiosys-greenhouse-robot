@@ -1,7 +1,7 @@
 image: mirte_map.pgm
 mode: trinary
 resolution: 0.05000000074505806
-origin: [-0.6277509196351723, -2.776084973410671, 0.0]
+origin: [-1.2265410224372397, -1.9786089355018006, 0.0]
 negate: 0
 occupied_thresh: 0.8
 free_thresh: 0.25

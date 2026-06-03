@@ -8,6 +8,11 @@
     "armCameraRaw": null,
     "liveMap": "/map",
     "mapUpdatePeriodSec": 10,
+    "initialPose": "/initialpose",
+    "goalPose": "/goal_pose",
+    "navigateToPose": "/navigate_to_pose",
+    "navPlan": "/plan",
+    "homePose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
     "mappingStatus": "simbiosys/mapping_status",
     "taskStatus": "simbiosys/task_status",
     "setTaskMode": "simbiosys/set_robot_mode",
@@ -27,6 +32,7 @@
     "typedPlantHealth": "simbiosys/plant_health",
     "flowerCounts": "/simbiosys/flower_counts",
     "bedObservation": "simbiosys/bed_observation",
+    "bedEnvironment": "/bed_environment",
     "battery": "/io/power/power_watcher"
   }
 }

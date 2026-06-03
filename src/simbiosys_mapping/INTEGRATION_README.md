@@ -1,25 +1,28 @@
 # simbiosys_mapping Integration README
 
-This document is for the person integrating or merging the mapping,
-localization, and navigation work into another branch or workspace.
+This document is for the person merging the mapping, localization, and
+navigation work into another branch or workspace.
 
-For now, transfer the complete `src/simbiosys_mapping/` package and the related
-documentation files listed below. Some helper nodes could be simplified later,
-but at this stage keep all files together so the launch files, package install
-rules, RViz configs, and console scripts still match.
+Transfer the complete `src/simbiosys_mapping/` package. Some helper nodes could
+be simplified later, but for now keep the package intact so launch files,
+install rules, behavior trees, RViz configs, and console scripts stay
+consistent.
 
 ## What This Package Provides
 
-`simbiosys_mapping` does not implement SLAM, AMCL, or Nav2 from scratch. It wraps
-existing ROS 2 packages with project-specific configuration:
+`simbiosys_mapping` wraps existing ROS 2 packages for the MIRTE Master:
 
-- `slam_toolbox` for building a map.
-- Nav2 `map_server` for loading a saved map.
-- Nav2 `amcl` for localization in a saved map.
-- Nav2 planner/controller/BT navigator for goal navigation.
-- Gazebo/RViz launch support for simulation testing.
-- Small Python helper nodes for saving maps and optionally publishing an initial
-  pose.
+- `slam_toolbox` for SLAM mapping.
+- Nav2 `map_server` and `amcl` for localization.
+- Nav2 planner, controller, behavior server, and BT navigator for goal
+  navigation.
+- A custom Nav2 behavior tree for tight-space recovery.
+- RViz configs for mapping, localization, and navigation.
+- Gazebo static-obstacle world for simulation tests.
+- Python helper nodes for map saving, optional initial-pose publishing, and
+  mapping status checks.
+
+It does not implement SLAM, AMCL, or planning algorithms from scratch.
 
 ## Files To Transfer
 
@@ -33,6 +36,8 @@ src/simbiosys_mapping/
   setup.py
   setup.cfg
   resource/simbiosys_mapping
+  behavior_trees/
+    nav2_tight_space_backup_bt_deadband.xml
   config/
     slam_toolbox_mapping.yaml
     amcl_localization.yaml
@@ -54,184 +59,313 @@ src/simbiosys_mapping/
     static_obstacles.world
 ```
 
-Do not transfer generated cache files:
+Do not transfer generated files:
 
 ```text
 __pycache__/
 *.pyc
 ```
 
-Also transfer the mapping/localization documentation:
+Also transfer the relevant documentation:
 
 ```text
 docs/mapping.md
 docs/slam_debug_tuning.md
 docs/localization_debug_tuning.md
 docs/topic_reference.md
+docs/robot_connection.md
 docs/README.md
 ```
 
 Saved maps are intentionally outside the package. If localization/navigation
-should work immediately in the merged workspace, also transfer the selected map:
+should work immediately, also transfer the selected map pair:
 
 ```text
 maps/mirte_map.yaml
 maps/mirte_map.pgm
 ```
 
-or whichever `.yaml`/`.pgm` map pair is currently used.
+## External Robot Description Change
 
-## Package Metadata
+This work also depends on a MIRTE Master lidar TF correction outside
+`simbiosys_mapping`:
 
-Keep these files:
+```text
+src/mirte-ros-packages/mirte_description/mirte_master_description/urdf/lidar.xacro
+```
 
-| File | Why it is needed |
-| --- | --- |
-| `package.xml` | Declares ROS dependencies such as `slam_toolbox`, `nav2_amcl`, `nav2_bt_navigator`, `nav2_controller`, `nav2_map_server`, `dwb_core`, and RViz. |
-| `setup.py` | Installs Python nodes, launch files, config files, RViz files, worlds, and package documentation. |
-| `setup.cfg` | Tells ROS where Python console scripts are installed. |
-| `resource/simbiosys_mapping` | Required by `ament_python` so ROS can find the package. |
-| `simbiosys_mapping/__init__.py` | Required so the Python node folder is a Python package. |
+The corrected `frame_link -> lidar_base` translation should be approximately:
+
+```text
+Translation: [0.000, -0.001, 0.007]
+```
+
+The old/wrong value was approximately:
+
+```text
+Translation: [0.000, -0.101, 0.007]
+```
+
+Verify on the real robot:
+
+```bash
+ros2 run tf2_ros tf2_echo frame_link lidar_base
+```
+
+The same correction must be present on the physical robot installation, because
+the robot publishes its own `/tf_static`. If this fix is missing, mapping,
+localization, and local costmaps can show obstacles in the wrong place.
+
+After this correction, make a new map. Do not rely on maps created with the old
+lidar transform.
+
+## Package Install Rules
+
+`simbiosys_mapping` is an `ament_python` package. Install rules are in
+`setup.py`, not `CMakeLists.txt`.
+
+`setup.py` installs:
+
+- package metadata and READMEs
+- YAML config files
+- launch files
+- RViz files
+- Gazebo world files
+- behavior tree XML files
+- Python console scripts
+
+The behavior tree XML must be installed to:
+
+```text
+install/share/simbiosys_mapping/behavior_trees/
+```
+
+This is already handled by:
+
+```python
+(
+    os.path.join("share", package_name, "behavior_trees"),
+    glob("behavior_trees/*.xml"),
+)
+```
+
+## ROS Dependencies
+
+Important runtime dependencies in `package.xml` include:
+
+```text
+slam_toolbox
+nav2_amcl
+nav2_map_server
+nav2_lifecycle_manager
+nav2_bt_navigator
+nav2_behavior_tree
+nav2_controller
+nav2_planner
+nav2_smac_planner
+nav2_behaviors
+nav2_costmap_2d
+dwb_core
+dwb_critics
+rviz2
+mirte_gazebo
+```
 
 ## Launch Files
 
 ### `launch/getmap.launch.py`
 
-Mapping launch. It starts `slam_toolbox`, the map-saving node, RViz, and
-optionally Gazebo.
+Starts SLAM mapping.
 
-Main mode flag:
+Can run in simulation:
 
 ```bash
-simulation:=true   # Gazebo + mapping
-simulation:=false  # real robot + mapping
+ros2 launch simbiosys_mapping getmap.launch.py simulation:=true
 ```
 
-Important inputs:
+or on the real robot:
+
+```bash
+ros2 launch simbiosys_mapping getmap.launch.py simulation:=false
+```
+
+Main inputs:
 
 ```text
 /scan
-/odom
+/odom or /mirte_base_controller/odom
 /tf
 /tf_static
 ```
 
-Important outputs:
+Main outputs:
 
 ```text
 /map
-map -> odom TF
+map -> odom
 maps/<map_name>.yaml
 maps/<map_name>.pgm
 ```
 
-Default saved map path:
+`getmap_node` saves the map periodically and exposes:
 
 ```text
-maps/mirte_map.yaml
-maps/mirte_map.pgm
+/getmap_node/save_map
 ```
 
 ### `launch/localization.launch.py`
 
-Localization launch. It starts Nav2 `map_server`, Nav2 `amcl`, lifecycle
-management, RViz, and optionally Gazebo.
-
-Main mode flag:
+Starts standalone AMCL localization on a saved map.
 
 ```bash
-simulation:=true   # Gazebo + AMCL on saved map
-simulation:=false  # real robot + AMCL on saved map
+ros2 launch simbiosys_mapping localization.launch.py \
+  simulation:=false \
+  map:=maps/mirte_map.yaml
 ```
 
-Important inputs:
+Main inputs:
 
 ```text
 map:=maps/mirte_map.yaml
 /scan
-/odom
 /tf
 /tf_static
 /initialpose
 ```
 
-Important outputs:
+Main outputs:
 
 ```text
 /map
 /amcl_pose
 /particle_cloud
-map -> odom TF
+map -> odom
 ```
 
-Initial pose is manual by default. The operator should set it in RViz with
-`2D Pose Estimate`.
+Initial pose is manual by default. The operator should use RViz `2D Pose
+Estimate`.
 
 ### `launch/navigation.launch.py`
 
-Nav2 navigation launch. This assumes localization is already running and AMCL
-has already published `map -> odom`.
+Starts the full navigation stack. It is self-contained and starts:
 
-Important inputs:
+- `map_server`
+- `amcl`
+- `controller_server`
+- `planner_server`
+- `behavior_server`
+- `bt_navigator`
+- RViz
+- optional Gazebo when `simulation:=true`
 
-```text
-/goal_pose
-/map
-/scan
-/mirte_base_controller/odom
-/tf
-/tf_static
+Real robot:
+
+```bash
+ros2 launch simbiosys_mapping navigation.launch.py simulation:=false
 ```
 
-Important outputs:
+Simulation:
 
-```text
-/plan
-/local_plan
-/global_costmap/costmap
-/local_costmap/costmap
-/mirte_base_controller/cmd_vel              # real robot
-/mirte_base_controller/cmd_vel_unstamped    # simulation
+```bash
+ros2 launch simbiosys_mapping navigation.launch.py simulation:=true
 ```
 
-The launch file uses:
+It always loads:
 
 ```text
-cmd_vel_topic:=auto
+maps/mirte_map.yaml
 ```
 
-which maps the command topic as:
+The operator must set the initial pose in RViz with `2D Pose Estimate` before
+sending a goal. `navigation.launch.py` does not start `initial_pose_node`.
+
+Command topic selection:
 
 | Mode | Command topic |
 | --- | --- |
 | `simulation:=true` | `/mirte_base_controller/cmd_vel_unstamped` |
 | `simulation:=false` | `/mirte_base_controller/cmd_vel` |
 
-If the merged robot stack uses a different command topic, override it:
+Override only if the merged base stack uses another command topic:
 
 ```bash
 ros2 launch simbiosys_mapping navigation.launch.py \
   simulation:=false \
-  cmd_vel_topic:=/your_robot/cmd_vel
+  cmd_vel_topic:=/your_cmd_vel_topic
 ```
 
-## Config Files
+## Navigation Configuration
 
-| File | Used by | Purpose |
-| --- | --- | --- |
-| `config/slam_toolbox_mapping.yaml` | `getmap.launch.py` | SLAM Toolbox frames, scan matching, map resolution, update intervals, loop closure, laser range limits. |
-| `config/amcl_localization.yaml` | `localization.launch.py` | AMCL particle filter, laser model, odometry noise, frames, map server lifecycle settings. |
-| `config/nav2_navigation.yaml` | `navigation.launch.py` | Nav2 BT navigator, planner, controller, behavior server, global/local costmaps. |
+`config/nav2_navigation.yaml` currently uses:
 
-Expected frame chain:
+- `nav2_smac_planner/SmacPlanner2D` as the global planner.
+- `nav2_rotation_shim_controller::RotationShimController` as the outer
+  controller.
+- `dwb_core::DWBLocalPlanner` as the primary local controller.
+- A custom behavior tree for local clear, backup, spin, wait, and retry.
+
+The planner is tuned to prefer safer paths using:
 
 ```text
-map -> odom -> base_link -> lidar frame
+cost_travel_multiplier
+global_costmap inflation_radius
+global_costmap cost_scaling_factor
 ```
 
-`slam_toolbox` owns `map -> odom` during mapping. `amcl` owns `map -> odom`
-during localization/navigation. Do not run mapping and localization at the same
-time.
+The controller is tuned around observed MIRTE deadbands:
+
+```text
+minimum useful angular velocity: about 0.4 rad/s
+minimum useful linear velocity: about 0.2 m/s
+```
+
+The global costmap uses the static map plus inflation. The local costmap uses
+laser observations for nearby obstacles. A local obstacle can stop or recover
+the robot, but the local controller should not be treated as a full global
+replanner.
+
+## Behavior Tree
+
+The custom behavior tree is:
+
+```text
+behavior_trees/nav2_tight_space_backup_bt_deadband.xml
+```
+
+It:
+
+- computes a path to the goal
+- follows the path
+- clears local costmap and backs up if local following fails
+- clears global/local costmaps during recovery
+- can spin or wait during recovery
+- retries navigation
+- accepts updated goals
+
+`config/nav2_navigation.yaml` contains only a portable placeholder:
+
+```yaml
+default_nav_to_pose_bt_xml: nav2_tight_space_backup_bt_deadband.xml
+```
+
+`navigation.launch.py` rewrites that value at launch time to the installed
+package path:
+
+```text
+install/share/simbiosys_mapping/behavior_trees/nav2_tight_space_backup_bt_deadband.xml
+```
+
+Verify while navigation is running:
+
+```bash
+ros2 param get /bt_navigator default_nav_to_pose_bt_xml
+```
+
+Expected value should contain:
+
+```text
+nav2_tight_space_backup_bt_deadband.xml
+```
 
 ## RViz Files
 
@@ -239,53 +373,34 @@ time.
 | --- | --- |
 | `rviz/getmap.rviz` | Mapping view: map, scan, robot model, TF. |
 | `rviz/localization.rviz` | Localization view: saved map, AMCL pose, particles, scan, robot. |
-| `rviz/navigation.rviz` | Navigation view: map, global/local costmaps, plan, scan, AMCL pose, Nav2 panel. |
+| `rviz/navigation.rviz` | Navigation view: map, AMCL, plan, costmaps, scan, footprint, Nav2 tools. |
+
+Important navigation displays:
+
+```text
+/plan
+/local_costmap/costmap
+/global_costmap/costmap
+/local_costmap/published_footprint
+/global_costmap/published_footprint
+```
+
+The footprint topics show Nav2's collision model. The robot model shows the URDF
+mesh and may not exactly match the costmap radius.
 
 ## Python Nodes
 
-Keep these for now, even if some could later be replaced by standard commands.
+Keep these for now:
 
-| Node file | Console script | Reads | Publishes / provides | Purpose |
-| --- | --- | --- | --- | --- |
-| `simbiosys_mapping/getmap_node.py` | `getmap_node` | `/map`, `/scan`, `/odom` | `/getmap_node/save_map` service, `.yaml/.pgm` files | Saves the occupancy grid to the workspace `maps/` folder automatically or on service call. |
-| `simbiosys_mapping/initial_pose_node.py` | `initial_pose_node` | parameters only | `/initialpose` | Optional scripted AMCL initial pose publisher. Disabled by default in normal use. |
-| `simbiosys_mapping/mapping_status_node.py` | `mapping_status_node` | `/map`, `/scan`, `/odom` | log output | Small status/debug helper for checking whether mapping topics are alive. |
-
-## Gazebo World
-
-`worlds/static_obstacles.world` is the simulation world used by mapping and
-localization when:
-
-```bash
-simulation:=true
-```
-
-It gives a repeatable static-obstacle environment for SLAM/localization tests.
+| Node file | Console script | Purpose |
+| --- | --- | --- |
+| `simbiosys_mapping/getmap_node.py` | `getmap_node` | Saves `/map` to the workspace `maps/` folder automatically or on service call. |
+| `simbiosys_mapping/initial_pose_node.py` | `initial_pose_node` | Optional scripted AMCL initial-pose publisher. Disabled in normal navigation use. |
+| `simbiosys_mapping/mapping_status_node.py` | `mapping_status_node` | Small topic-status helper for mapping debug. |
 
 ## Runtime Workflow
 
-Mapping:
-
-```bash
-ros2 launch simbiosys_mapping getmap.launch.py simulation:=true
-```
-
-Localization:
-
-```bash
-ros2 launch simbiosys_mapping localization.launch.py \
-  simulation:=true \
-  map:=maps/mirte_map.yaml
-```
-
-Navigation:
-
-```bash
-ros2 launch simbiosys_mapping navigation.launch.py simulation:=true
-```
-
-For the real robot, use `simulation:=false` and make sure the laptop can see
-robot topics:
+Real robot connection:
 
 ```bash
 export ROS_DOMAIN_ID=0
@@ -295,9 +410,29 @@ ros2 daemon start
 ros2 topic list
 ```
 
+Mapping:
+
+```bash
+ros2 launch simbiosys_mapping getmap.launch.py simulation:=false
+```
+
+Localization only:
+
+```bash
+ros2 launch simbiosys_mapping localization.launch.py \
+  simulation:=false \
+  map:=maps/mirte_map.yaml
+```
+
+Navigation:
+
+```bash
+ros2 launch simbiosys_mapping navigation.launch.py simulation:=false
+```
+
 ## Integration Checks
 
-After merging, run:
+After merging:
 
 ```bash
 colcon build --packages-select simbiosys_mapping
@@ -307,23 +442,42 @@ ros2 launch simbiosys_mapping localization.launch.py --show-args
 ros2 launch simbiosys_mapping navigation.launch.py --show-args
 ```
 
-Topic checks for mapping/localization:
+Check installed behavior tree:
+
+```bash
+test -f install/share/simbiosys_mapping/behavior_trees/nav2_tight_space_backup_bt_deadband.xml
+```
+
+Check robot TF:
+
+```bash
+ros2 run tf2_ros tf2_echo frame_link lidar_base
+```
+
+Check localization/navigation topics:
 
 ```bash
 ros2 topic echo /scan --once
 ros2 topic echo /map --once
-ros2 run tf2_ros tf2_echo map odom
-```
-
-Topic checks for navigation:
-
-```bash
+ros2 run tf2_ros tf2_echo map base_link
 ros2 lifecycle get /bt_navigator
 ros2 topic echo /plan --once
 ros2 topic echo /mirte_base_controller/cmd_vel --once
-ros2 topic info /mirte_base_controller/cmd_vel
 ```
 
 Use `/mirte_base_controller/cmd_vel_unstamped` instead of
 `/mirte_base_controller/cmd_vel` in simulation.
 
+## Known Practical Notes
+
+- Create a fresh map after the lidar TF fix.
+- If the whole map is rotated but geometrically straight, the robot likely
+  started mapping at a rotated heading.
+- If the map bends or shears, debug odometry, TF, scan quality, and SLAM
+  parameters.
+- If the robot freezes near obstacles, inspect the local costmap and published
+  footprint in RViz.
+- If the robot hits new obstacles, the local costmap/controller tuning is the
+  first place to inspect.
+- If the robot does not move even though a goal is accepted, check whether
+  `/cmd_vel` is being published and whether the base controller subscribes.

@@ -12,14 +12,20 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion, Twist
+from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+
+try:
+    from nav2_msgs.action import NavigateToPose
+except ImportError:
+    NavigateToPose = None
 
 try:
     from simbiosys_interfaces.action import ExecuteBehavior
@@ -38,7 +44,6 @@ except ImportError:
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "rosTopics.json"
 DEFAULT_WEB_HOST = "0.0.0.0"
 DEFAULT_WEB_PORT = 8080
-DEFAULT_CAMERA_MAX_FPS = 1.0
 DEFAULT_TELEOP_QUEUE_DEPTH = 1
 DEFAULT_CONFIG = {
     "rosbridgeUrl": "ws://localhost:9090",
@@ -50,6 +55,11 @@ DEFAULT_CONFIG = {
         "armCameraRaw": None,
         "liveMap": "/map",
         "mapUpdatePeriodSec": 10,
+        "initialPose": "/initialpose",
+        "goalPose": "/goal_pose",
+        "navigateToPose": "/navigate_to_pose",
+        "navPlan": "/plan",
+        "homePose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
         "mappingStatus": "simbiosys/mapping_status",
         "taskStatus": "simbiosys/task_status",
         "setTaskMode": "simbiosys/set_robot_mode",
@@ -69,6 +79,7 @@ DEFAULT_CONFIG = {
         "typedPlantHealth": "simbiosys/plant_health",
         "flowerCounts": "/simbiosys/flower_counts",
         "bedObservation": "simbiosys/bed_observation",
+        "bedEnvironment": "/bed_environment",
         "battery": "/io/power/power_watcher",
     },
 }
@@ -149,6 +160,10 @@ INDEX_HTML = """<!doctype html>
       font-weight: 700;
       cursor: pointer;
       touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
     }
     button:disabled, select:disabled {
       cursor: not-allowed;
@@ -218,15 +233,100 @@ INDEX_HTML = """<!doctype html>
       font-size: 1.1rem;
     }
     .bed-card {
-      border: 1px solid var(--line);
+      border: 4px solid var(--line);
       border-radius: 8px;
       padding: 12px;
       background: #17201d;
       display: grid;
       gap: 8px;
+      min-height: 260px;
+      align-content: start;
     }
-    .bed-card.available { border-color: #4d7258; }
+    .bed-card.available, .bed-card.status-ok { border-color: #56c271; }
+    .bed-card.status-warning { border-color: #e1b94b; }
+    .bed-card.status-danger { border-color: #e2685d; }
     .bed-card.unavailable { border-color: #59615d; }
+    .bed-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .bed-metrics p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .bed-plot {
+      min-height: 150px;
+      border: 1px solid #34433d;
+      border-radius: 6px;
+      background: #101815;
+      display: grid;
+      grid-template-rows: repeat(2, minmax(58px, 1fr));
+      gap: 8px;
+      padding: 10px;
+    }
+    .bed-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .bed-row + .bed-row {
+      border-top: 1px dashed #34433d;
+      padding-top: 8px;
+    }
+    .plant-dot {
+      flex: 0 0 44px;
+      width: 44px;
+      height: 44px;
+      aspect-ratio: 1;
+      padding: 0;
+      border: 5px solid #56c271;
+      border-radius: 50%;
+      cursor: pointer;
+      appearance: none;
+      display: grid;
+      place-items: center;
+      color: #07110b;
+      font-size: 0.82rem;
+      font-weight: 800;
+      line-height: 1;
+      box-shadow: 0 0 0 2px #0c1110, 0 0 10px rgba(86, 194, 113, 0.35);
+    }
+    .plant-dot.status-warning { border-color: #e1b94b; }
+    .plant-dot.status-danger { border-color: #e2685d; }
+    .plant-dot.selected { outline: 2px solid #edf5ef; outline-offset: 3px; }
+    .plant-detail {
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .plant-detail strong { font-size: 1rem; }
+    .plant-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .plant-detail-grid p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .plant-detail-grid strong {
+      display: block;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    .plant-notes {
+      margin: 8px 0 0;
+      color: var(--muted);
+    }
+    .plant-detail-panel {
+      min-height: 118px;
+    }
     .teleop-main {
       display: grid;
       grid-template-columns: minmax(280px, 0.9fr) minmax(340px, 1.1fr);
@@ -268,6 +368,7 @@ INDEX_HTML = """<!doctype html>
       gap: 10px;
     }
     .pad { grid-template-rows: repeat(3, 74px); }
+    .pad button { touch-action: none; }
     .empty { visibility: hidden; }
     .candidate-list {
       display: grid;
@@ -318,7 +419,15 @@ INDEX_HTML = """<!doctype html>
             </div>
             <div id="dashboard-map-placeholder" class="placeholder">Waiting for SLAM map</div>
             <canvas id="dashboard-map-canvas" width="900" height="520" style="display:none"></canvas>
-            <div class="control-row"><span id="selected-target">No map position selected</span><button id="navigate-target" disabled>Navigate</button></div>
+            <div class="control-row">
+              <span id="selected-target">No map position selected</span>
+              <div class="topline">
+                <button id="set-initial-pose" disabled>Set Start Pose</button>
+                <button id="navigate-target" disabled>Navigate</button>
+                <button id="cancel-navigation" disabled>Cancel Navigation</button>
+                <button id="go-home" disabled>Go Home</button>
+              </div>
+            </div>
             <p id="navigation-message">Navigation backend unavailable</p>
           </div>
         </section>
@@ -351,45 +460,30 @@ INDEX_HTML = """<!doctype html>
         </div>
       </section>
       <section class="panel">
-        <div class="panel-body" id="plant-records">
-          <h2>Plant Records</h2>
-          <p>No plant records received</p>
+        <div class="panel-body plant-detail-panel" id="selected-plant-detail">
+          <h2>Flower Info</h2>
+          <p>Select a flower</p>
         </div>
       </section>
     </section>
 
     <section id="teleop-page" class="page">
-      <div class="teleop-main">
-        <section class="panel">
-          <div class="panel-body">
-            <div class="topline">
-              <h2>Camera</h2>
-              <select id="camera-select">
-                <option value="base">Base/front camera</option>
-                <option value="arm">Arm camera</option>
-              </select>
-              <span class="status-pill" id="camera-state">waiting</span>
-            </div>
-            <div class="camera">
-              <img id="camera-feed" alt="Live camera feed">
-              <div id="camera-placeholder" class="placeholder" style="display:none">Waiting for camera frames</div>
-            </div>
+      <section class="panel">
+        <div class="panel-body">
+          <div class="topline">
+            <h2>Camera</h2>
+            <select id="camera-select">
+              <option value="base">Base/front camera</option>
+              <option value="arm">Arm camera</option>
+            </select>
+            <span class="status-pill" id="camera-state">waiting</span>
           </div>
-        </section>
-        <section class="panel">
-          <div class="panel-body">
-            <div class="topline">
-              <h2>Live Mapping</h2>
-              <span class="status-pill" id="map-state">Waiting for SLAM map</span>
-            </div>
-            <div class="map-panel">
-              <div id="teleop-map-placeholder" class="placeholder">Waiting for SLAM map</div>
-              <canvas id="teleop-map-canvas" width="900" height="520" style="display:none"></canvas>
-            </div>
-            <div class="control-row"><span id="map-meta">Last SLAM map: not received yet</span><strong id="pose-state">robot pose unavailable</strong></div>
+          <div class="camera">
+            <img id="camera-feed" alt="Live camera feed">
+            <div id="camera-placeholder" class="placeholder" style="display:none">Waiting for camera frames</div>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
 
       <div class="workflow-grid">
         <section class="panel">
@@ -437,34 +531,6 @@ INDEX_HTML = """<!doctype html>
           </div>
         </section>
 
-        <section class="panel">
-          <div class="panel-body">
-            <h2>Mapping Workflow</h2>
-            <div class="topline">
-              <button id="start-mapping" disabled>Start Mapping</button>
-              <button id="done-mapping" disabled>Stop Mapping</button>
-              <button id="retry-mapping" disabled>Retry</button>
-              <button id="save-safe-map" disabled>Save Safe Map</button>
-            </div>
-            <p id="workflow-message">Mapping workflow unavailable</p>
-            <div class="control-row"><span>Artifact candidates</span><strong id="candidate-state">No artifact candidates received</strong></div>
-            <div class="control-row"><span>Map</span><strong id="mapping-map-time">Last SLAM map: not received yet</strong></div>
-            <p id="candidate-parse-error" class="warning" style="display:none"></p>
-            <div class="candidate-list" id="candidate-list"></div>
-            <div id="candidate-detail" class="panel-body" style="padding:0">
-              <h3>Artifact</h3>
-              <p>No artifact candidates received</p>
-            </div>
-            <div class="class-controls">
-              <button data-classification="wall" disabled>Wall</button>
-              <button data-classification="bed" disabled>Bed</button>
-              <button data-classification="obstacle" disabled>Obstacle</button>
-              <button data-classification="false_scan" disabled>False Scan</button>
-            </div>
-            <p id="save-safe-map-warning" class="warning" style="display:none"></p>
-            <div id="safe-map-result" class="panel-body" style="padding:0;display:none"></div>
-          </div>
-        </section>
       </div>
     </section>
   </main>
@@ -477,6 +543,8 @@ INDEX_HTML = """<!doctype html>
       activeSources: new Map(),
       pressedKeys: new Set(),
       latestMap: null,
+      latestNavPlan: null,
+      latestRobotPose: null,
       frozenMap: null,
       mappingActive: false,
       reviewMode: false,
@@ -490,7 +558,10 @@ INDEX_HTML = """<!doctype html>
       lastMapRenderMs: 0,
       lastMapStamp: null,
       lastCandidateStamp: null,
+      lastPlanStamp: null,
       selectedMapTarget: null,
+      navigationActive: false,
+      selectedPlantId: null,
       manualControlActive: false,
       safetyPaused: false,
       topics: {}
@@ -671,6 +742,9 @@ INDEX_HTML = """<!doctype html>
       const movementDisabled = state.safetyPaused || !state.manualControlActive || state.operationMode !== "robot";
       document.querySelectorAll("button[data-control]").forEach((control) => control.disabled = movementDisabled);
       document.getElementById("navigate-target").disabled = state.safetyPaused || !state.selectedMapTarget || !state.navigationAvailable;
+      document.getElementById("set-initial-pose").disabled = state.safetyPaused || !state.selectedMapTarget || !state.initialPoseAvailable;
+      document.getElementById("go-home").disabled = state.safetyPaused || !state.navigationAvailable;
+      document.getElementById("cancel-navigation").disabled = state.safetyPaused || !state.navigationActive;
       const takeButton = document.getElementById("take-control");
       takeButton.textContent = state.manualControlActive ? "Release Control" : "Take Control";
       takeButton.disabled = state.safetyPaused;
@@ -769,6 +843,7 @@ INDEX_HTML = """<!doctype html>
     }
     function renderSafeMapResult() {
       const container = document.getElementById("safe-map-result");
+      if (!container) return;
       if (!state.safeMapResult) {
         container.style.display = "none";
         container.innerHTML = "";
@@ -893,7 +968,7 @@ INDEX_HTML = """<!doctype html>
       });
       state.renderWarnings = warnings;
     }
-    function drawOccupancyGrid(canvasId, placeholderId, map, robotPose, showRobot, selectedTarget) {
+    function drawOccupancyGrid(canvasId, placeholderId, map, robotPose, showRobot, selectedTarget, navPlan) {
       const canvas = document.getElementById(canvasId);
       const placeholder = document.getElementById(placeholderId);
       if (!map || !map.width || !map.height || !Array.isArray(map.data)) {
@@ -928,12 +1003,29 @@ INDEX_HTML = """<!doctype html>
         ctx.lineTo(target.x, target.y + 14);
         ctx.stroke();
       }
+      const planPoints = navPlan && Array.isArray(navPlan.points) ? navPlan.points : [];
+      if (planPoints.length >= 2) {
+        ctx.save();
+        ctx.strokeStyle = "#66a8d9";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([]);
+        drawWorldPolyline(ctx, map, canvas, planPoints, false, false);
+        ctx.restore();
+      }
       if (showRobot && robotPose && Number.isFinite(robotPose.x) && map.resolution) {
         const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
         ctx.fillStyle = "#66a8d9";
         ctx.beginPath();
         ctx.arc(robot.x, robot.y, 8, 0, Math.PI * 2);
         ctx.fill();
+        if (Number.isFinite(robotPose.yaw)) {
+          ctx.strokeStyle = "#66a8d9";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(robot.x, robot.y);
+          ctx.lineTo(robot.x + Math.cos(robotPose.yaw) * 18, robot.y - Math.sin(robotPose.yaw) * 18);
+          ctx.stroke();
+        }
       }
       drawCandidateOverlays(ctx, map, canvas);
     }
@@ -952,23 +1044,36 @@ INDEX_HTML = """<!doctype html>
       state.selectedMapTarget = target;
       document.getElementById("selected-target").textContent = `Selected ${target.x.toFixed(2)}, ${target.y.toFixed(2)}`;
       updateSafetyButton();
-      renderMaps({map: state.latestMap, robotPose: null});
+      renderMaps({map: state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
     });
     document.getElementById("navigate-target").addEventListener("click", async () => {
       if (!state.selectedMapTarget) return;
       const data = await postJson("/api/navigation/goal", state.selectedMapTarget);
       document.getElementById("navigation-message").textContent = data.message;
     });
+    document.getElementById("set-initial-pose").addEventListener("click", async () => {
+      if (!state.selectedMapTarget) return;
+      const data = await postJson("/api/navigation/initial_pose", state.selectedMapTarget);
+      document.getElementById("navigation-message").textContent = data.message;
+    });
+    document.getElementById("cancel-navigation").addEventListener("click", async () => {
+      const data = await postJson("/api/navigation/cancel");
+      document.getElementById("navigation-message").textContent = data.message;
+    });
+    document.getElementById("go-home").addEventListener("click", async () => {
+      const data = await postJson("/api/navigation/home");
+      document.getElementById("navigation-message").textContent = data.message;
+    });
 
     function renderMaps(data) {
       const map = state.reviewMode && state.frozenMap ? state.frozenMap : data.map;
-      drawOccupancyGrid("dashboard-map-canvas", "dashboard-map-placeholder", map, null, false, state.selectedMapTarget);
-      drawOccupancyGrid("teleop-map-canvas", "teleop-map-placeholder", map, data.robotPose, true, null);
+      drawOccupancyGrid("dashboard-map-canvas", "dashboard-map-placeholder", map, data.robotPose, true, state.selectedMapTarget, data.navPlan);
     }
     function maybeRenderMaps(data) {
       const map = state.reviewMode && state.frozenMap ? state.frozenMap : (data.map || state.latestMap);
       const stamp = map ? map.receivedAt : null;
       const candidateStamp = state.reviewMode ? "review" : state.artifactCandidatesReceivedAt;
+      const planStamp = data.navPlan ? data.navPlan.receivedAt : null;
       const periodMs = Math.max(1, Number(data.topics.mapUpdatePeriodSec || 10)) * 1000;
       const now = Date.now();
       if (!map) {
@@ -977,10 +1082,12 @@ INDEX_HTML = """<!doctype html>
       }
       if (
         candidateStamp !== state.lastCandidateStamp ||
+        planStamp !== state.lastPlanStamp ||
         (stamp !== state.lastMapStamp && (now - state.lastMapRenderMs >= periodMs || !state.lastMapStamp))
       ) {
         state.lastMapStamp = stamp;
         state.lastCandidateStamp = candidateStamp;
+        state.lastPlanStamp = planStamp;
         state.lastMapRenderMs = now;
         renderMaps(data);
       }
@@ -1011,35 +1118,141 @@ INDEX_HTML = """<!doctype html>
       document.getElementById("flower-count").textContent = report.totalFlowers;
       document.getElementById("last-scan").textContent = timeSince(report.lastScanTime);
       document.getElementById("next-action").textContent = report.nextAction || "Waiting for real data";
-      const records = document.getElementById("plant-records");
-      records.innerHTML = "<h2>Plant Records</h2>";
-      if (!plants.length) {
+    }
+    function numericValue(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+    function bedSeverity(bed) {
+      if (bed.bugs_detected === true) return "danger";
+      const co2 = numericValue(bed.co2);
+      const humidity = numericValue(bed.humidity);
+      let warnings = 0;
+      if (co2 != null) {
+        if (co2 < 250 || co2 > 2000) return "danger";
+        if (co2 < 400 || co2 > 1000) warnings += 1;
+      }
+      if (humidity != null) {
+        if (humidity < 30 || humidity > 90) return "danger";
+        if (humidity < 45 || humidity > 75) warnings += 1;
+      }
+      if (warnings >= 2) return "danger";
+      if (warnings === 1) return "warning";
+      return bed.available ? "ok" : "unavailable";
+    }
+    function plantSeverity(plant) {
+      if (plant.bug_detected) return "danger";
+      const health = String(plant.health || "").toLowerCase();
+      if (health === "critical" || health === "unhealthy") return "danger";
+      if (health === "warning" || health === "unknown") return "warning";
+      return "ok";
+    }
+    function plantColor(plant) {
+      const color = String(plant.color || "").toLowerCase();
+      if (color === "magenta") return "#d657c9";
+      if (color === "light_pink") return "#f0a9cc";
+      if (color === "white") return "#edf5ef";
+      return "#7eb7e6";
+    }
+    function plantSide(plant, index) {
+      const side = String(plant.side || "").toLowerCase();
+      if (side === "left" || side === "right") return side;
+      const x = plant.position && Number(plant.position.x);
+      if (Number.isFinite(x)) return x < 0.5 ? "left" : "right";
+      return index % 2 === 0 ? "left" : "right";
+    }
+    function plantDetailMetric(label, value) {
+      const item = document.createElement("p");
+      const strong = document.createElement("strong");
+      strong.textContent = value == null || value === "" ? "unavailable" : value;
+      item.appendChild(strong);
+      item.append(label);
+      return item;
+    }
+    function visiblePlantNotes(plant) {
+      return String(plant.notes || "")
+        .replace(/flower detected:\\s*[\\w_-]+/gi, "")
+        .replace(/\\s*side[:=](left|right)\\b/gi, "")
+        .trim();
+    }
+    function renderPlantDetail(plant, label) {
+      const detail = document.createElement("div");
+      detail.className = "plant-detail";
+      const name = document.createElement("strong");
+      name.textContent = label || plant.flower_id || "plant";
+      const grid = document.createElement("div");
+      grid.className = "plant-detail-grid";
+      grid.appendChild(plantDetailMetric("color", plant.color));
+      grid.appendChild(plantDetailMetric("confidence", plant.confidence == null ? null : `${Math.round(Number(plant.confidence) * 100)}%`));
+      grid.appendChild(plantDetailMetric("stage", plant.growth_stage));
+      grid.appendChild(plantDetailMetric("growth", plant.ready_for_harvest == null ? null : (plant.ready_for_harvest ? "ready" : "still growing")));
+      grid.appendChild(plantDetailMetric("health", plant.health));
+      grid.appendChild(plantDetailMetric("bed", plant.bed_id));
+      detail.appendChild(name);
+      detail.appendChild(grid);
+      const visibleNotes = visiblePlantNotes(plant);
+      if (visibleNotes) {
+        const notes = document.createElement("p");
+        notes.className = "plant-notes";
+        notes.textContent = visibleNotes;
+        detail.appendChild(notes);
+      }
+      return detail;
+    }
+    function orderedBedPlants(bed) {
+      const bedPlants = Array.isArray(bed.plants) ? bed.plants : [];
+      const topPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "left");
+      const bottomPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "right");
+      return [...topPlants, ...bottomPlants];
+    }
+    function plantDisplayLabel(bed, plant) {
+      const orderedPlants = orderedBedPlants(bed);
+      const index = Math.max(0, orderedPlants.findIndex((candidate) => candidate.flower_id === plant.flower_id));
+      return `${bed.bed_id}${String.fromCharCode(97 + (index % 26))}`;
+    }
+    function renderPlantRow(plot, plants, bed, data) {
+      const row = document.createElement("div");
+      row.className = "bed-row";
+      plants.slice(0, 10).forEach((plant) => {
+        const dot = document.createElement("button");
+        dot.type = "button";
+        dot.className = `plant-dot status-${plantSeverity(plant)} ${state.selectedPlantId === plant.flower_id ? "selected" : ""}`;
+        dot.style.background = plantColor(plant);
+        dot.title = plant.flower_id || "plant";
+        dot.textContent = plantDisplayLabel(bed, plant);
+        dot.addEventListener("click", () => {
+          state.selectedPlantId = plant.flower_id;
+          renderBeds(data);
+        });
+        row.appendChild(dot);
+      });
+      plot.appendChild(row);
+    }
+    function selectedPlantRecord(data) {
+      for (const bed of data.beds || []) {
+        const plant = (bed.plants || []).find((candidate) => candidate.flower_id === state.selectedPlantId);
+        if (plant) return {bed, plant};
+      }
+      const plant = (data.plants || []).find((candidate) => candidate.flower_id === state.selectedPlantId);
+      return plant ? {bed: {bed_id: plant.bed_id, plants: data.plants || []}, plant} : null;
+    }
+    function renderSelectedPlantDetail(data) {
+      const container = document.getElementById("selected-plant-detail");
+      container.innerHTML = "<h2>Flower Info</h2>";
+      const selected = selectedPlantRecord(data);
+      if (!selected) {
         const empty = document.createElement("p");
-        empty.textContent = "No plant records received";
-        records.appendChild(empty);
+        empty.textContent = "Select a flower";
+        container.appendChild(empty);
         return;
       }
-      plants.forEach((plant) => {
-        const row = document.createElement("div");
-        row.className = "control-row";
-        const name = plant.flower_id || "unidentified plant";
-        const parts = [];
-        if (plant.bed_id) parts.push(`bed ${plant.bed_id}`);
-        if (plant.health) parts.push(plant.health);
-        if (plant.color) parts.push(plant.color);
-        if (plant.growth_stage) parts.push(plant.growth_stage);
-        if (plant.bug_detected) parts.push("bugs detected");
-        if (plant.ready_for_harvest) parts.push("ready");
-        if (plant.confidence != null) parts.push(`${Math.round(Number(plant.confidence) * 100)}% confidence`);
-        if (plant.last_scan_time) parts.push(`last scan ${timeSince(plant.last_scan_time)}`);
-        row.innerHTML = `<span>${name}</span><strong>${parts.join(", ") || "real record received"}</strong>`;
-        records.appendChild(row);
-      });
+      container.appendChild(renderPlantDetail(selected.plant, plantDisplayLabel(selected.bed, selected.plant)));
     }
     function renderBeds(data) {
       const container = document.getElementById("bed-overview");
       container.innerHTML = "";
       const beds = data.beds || [];
+      const allPlants = data.plants || [];
       if (!beds.length) {
         const empty = document.createElement("p");
         empty.textContent = "Waiting for bed telemetry";
@@ -1048,18 +1261,42 @@ INDEX_HTML = """<!doctype html>
       }
       beds.forEach((bed) => {
         const card = document.createElement("article");
-        card.className = `bed-card ${bed.available ? "available" : "unavailable"}`;
+        const bedPlants = Array.isArray(bed.plants)
+          ? bed.plants
+          : allPlants.filter((plant) => String(plant.bed_id || "") === String(bed.bed_id || ""));
+        const severity = bedSeverity(bed);
+        card.className = `bed-card ${bed.available ? "available" : "unavailable"} status-${severity}`;
         card.innerHTML = `
-          <h3>Bed ${bed.bed_id}</h3>
-          <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
-          <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
-          <p><strong>${bed.bugs_detected == null ? "unavailable" : (bed.bugs_detected ? "yes" : "no")}</strong>bugs detected</p>
+          <div class="topline">
+            <h3>Bed ${bed.bed_id}</h3>
+            <button class="inspect-bed" data-bed-id="${bed.bed_id}">Inspect Bed</button>
+          </div>
+          <div class="bed-metrics">
+            <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
+            <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
+            <p><strong>${bed.bugs_detected == null ? "unavailable" : (bed.bugs_detected ? "bugs" : "no bugs")}</strong>bug detection</p>
+          </div>
+          <div class="bed-plot">
+          </div>
         `;
+        const plot = card.querySelector(".bed-plot");
+        const topPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "left");
+        const bottomPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "right");
+        renderPlantRow(plot, topPlants, bed, data);
+        renderPlantRow(plot, bottomPlants, bed, data);
+        const inspectButton = card.querySelector(".inspect-bed");
+        inspectButton.disabled = state.safetyPaused || !data.behaviorAvailable;
+        inspectButton.addEventListener("click", async () => {
+          const result = await postJson("/api/bed/inspect", {bed_id: bed.bed_id});
+          document.getElementById("navigation-message").textContent = result.message;
+        });
         container.appendChild(card);
       });
+      renderSelectedPlantDetail(data);
     }
     function renderCandidates() {
       const list = document.getElementById("candidate-list");
+      if (!list) return;
       list.innerHTML = "";
       const detail = document.getElementById("candidate-detail");
       const candidates = candidateSet();
@@ -1116,50 +1353,53 @@ INDEX_HTML = """<!doctype html>
         renderCandidates();
       });
     });
-    document.getElementById("start-mapping").addEventListener("click", async () => {
-      const data = await postJson("/api/mapping/start");
-      document.getElementById("workflow-message").textContent = data.message;
-    });
-    document.getElementById("done-mapping").addEventListener("click", async () => {
-      if (!state.latestMap) return;
-      const data = await postJson("/api/mapping/done");
-      state.frozenMap = JSON.parse(JSON.stringify(state.latestMap));
-      state.frozenCandidates = JSON.parse(JSON.stringify(state.candidates || []));
-      state.reviewMode = true;
-      state.classifications = {};
-      state.safeMapResult = null;
-      document.getElementById("save-safe-map-warning").style.display = "none";
-      if (!state.frozenCandidates.some((candidate) => candidate.id === state.selectedCandidateId)) state.selectedCandidateId = null;
-      document.getElementById("workflow-message").textContent = data.message || (state.frozenCandidates.length ? "Reviewing frozen real artifact candidates" : "No artifact candidates received");
-      renderMaps({map: state.frozenMap, robotPose: null});
-      renderCandidates();
-    });
-    document.getElementById("retry-mapping").addEventListener("click", () => {
-      if (!state.frozenMap) return;
-      state.reviewMode = false;
-      state.frozenCandidates = null;
-      state.classifications = {};
-      state.safeMapResult = null;
-      state.selectedCandidateId = null;
-      document.getElementById("save-safe-map-warning").style.display = "none";
-      renderMaps({map: state.latestMap, robotPose: null});
-      renderCandidates();
-    });
-    document.getElementById("save-safe-map").addEventListener("click", async () => {
-      const reviewResult = safeMapReviewResult();
-      const unclassifiedCount = (state.frozenCandidates || []).filter((candidate) => !state.classifications[candidate.id]).length;
-      const data = await postJson("/api/mapping/save_safe_map", {
-        classifications: state.classifications,
-        candidates: state.frozenCandidates || [],
-        safeMapReview: reviewResult
+    const startMappingButton = document.getElementById("start-mapping");
+    if (startMappingButton) {
+      startMappingButton.addEventListener("click", async () => {
+        const data = await postJson("/api/mapping/start");
+        document.getElementById("workflow-message").textContent = data.message;
       });
-      state.safeMapResult = data.safeMapReview || reviewResult;
-      const warning = document.getElementById("save-safe-map-warning");
-      warning.style.display = unclassifiedCount ? "" : "none";
-      warning.textContent = unclassifiedCount ? "Unclassified artifacts will be saved as false_scan." : "";
-      document.getElementById("workflow-message").textContent = unclassifiedCount ? `${data.message}. Unclassified artifacts will be saved as false_scan.` : data.message;
-      renderSafeMapResult();
-    });
+      document.getElementById("done-mapping").addEventListener("click", async () => {
+        if (!state.latestMap) return;
+        const data = await postJson("/api/mapping/done");
+        state.frozenMap = JSON.parse(JSON.stringify(state.latestMap));
+        state.frozenCandidates = JSON.parse(JSON.stringify(state.candidates || []));
+        state.reviewMode = true;
+        state.classifications = {};
+        state.safeMapResult = null;
+        document.getElementById("save-safe-map-warning").style.display = "none";
+        if (!state.frozenCandidates.some((candidate) => candidate.id === state.selectedCandidateId)) state.selectedCandidateId = null;
+        document.getElementById("workflow-message").textContent = data.message || (state.frozenCandidates.length ? "Reviewing frozen real artifact candidates" : "No artifact candidates received");
+        renderMaps({map: state.frozenMap, robotPose: null, navPlan: null});
+        renderCandidates();
+      });
+      document.getElementById("retry-mapping").addEventListener("click", () => {
+        if (!state.frozenMap) return;
+        state.reviewMode = false;
+        state.frozenCandidates = null;
+        state.classifications = {};
+        state.safeMapResult = null;
+        state.selectedCandidateId = null;
+        document.getElementById("save-safe-map-warning").style.display = "none";
+        renderMaps({map: state.latestMap, robotPose: null, navPlan: null});
+        renderCandidates();
+      });
+      document.getElementById("save-safe-map").addEventListener("click", async () => {
+        const reviewResult = safeMapReviewResult();
+        const unclassifiedCount = (state.frozenCandidates || []).filter((candidate) => !state.classifications[candidate.id]).length;
+        const data = await postJson("/api/mapping/save_safe_map", {
+          classifications: state.classifications,
+          candidates: state.frozenCandidates || [],
+          safeMapReview: reviewResult
+        });
+        state.safeMapResult = data.safeMapReview || reviewResult;
+        const warning = document.getElementById("save-safe-map-warning");
+        warning.style.display = unclassifiedCount ? "" : "none";
+        warning.textContent = unclassifiedCount ? "Unclassified artifacts will be saved as false_scan." : "";
+        document.getElementById("workflow-message").textContent = unclassifiedCount ? `${data.message}. Unclassified artifacts will be saved as false_scan.` : data.message;
+        renderSafeMapResult();
+      });
+    }
 
     function saveDisabledReason(data) {
       if (state.safetyPaused) return "START required before safe-map save";
@@ -1225,7 +1465,11 @@ INDEX_HTML = """<!doctype html>
         state.safetyPaused = data.safetyPaused;
         state.manualControlActive = data.manualControlActive;
         state.navigationAvailable = data.navigation.available;
+        state.initialPoseAvailable = data.navigation.initialPoseAvailable;
+        state.navigationActive = data.navigation.active;
         if (data.map) state.latestMap = data.map;
+        state.latestNavPlan = data.navPlan || state.latestNavPlan;
+        state.latestRobotPose = data.robotPose || state.latestRobotPose;
         document.getElementById("connection").textContent = data.rosConnected ? "ROS node running" : "ROS waiting";
         document.getElementById("battery").textContent = data.batteryPercent == null ? "Battery --" : `Battery ${Math.round(data.batteryPercent)}%`;
         document.getElementById("camera-state").textContent = data.cameraReady ? `${data.camera.current} online` : `${data.camera.current} waiting`;
@@ -1233,12 +1477,7 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("camera-placeholder").style.display = data.cameraReady ? "none" : "grid";
         document.getElementById("camera-select").value = data.camera.current;
         document.querySelector('#camera-select option[value="arm"]').disabled = !data.camera.armAvailable;
-        const currentMap = data.map || state.latestMap;
-        const mapText = currentMap ? `Map ${currentMap.width}x${currentMap.height} at ${currentMap.resolution} m/cell` : "Waiting for SLAM map";
-        document.getElementById("map-state").textContent = mapText;
-        document.getElementById("map-meta").textContent = mapAgeText(state.latestMap);
         document.getElementById("dashboard-map-time").textContent = mapAgeText(state.latestMap);
-        document.getElementById("pose-state").textContent = data.robotPose ? "robot pose live" : "robot pose unavailable";
         maybeRenderMaps(data);
         renderReport(data.report, data.plants);
         renderBeds(data);
@@ -1247,20 +1486,26 @@ INDEX_HTML = """<!doctype html>
           document.getElementById("task-message").textContent = data.taskMode.current ? `Current backend state: ${data.taskMode.current}` : "Task mode backend available";
         }
         document.getElementById("navigate-target").disabled = state.safetyPaused || !state.selectedMapTarget || !data.navigation.available;
-        document.getElementById("navigation-message").textContent = data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable";
+        document.getElementById("set-initial-pose").disabled = state.safetyPaused || !state.selectedMapTarget || !data.navigation.initialPoseAvailable;
+        document.getElementById("cancel-navigation").disabled = state.safetyPaused || !data.navigation.active;
+        document.getElementById("go-home").disabled = state.safetyPaused || !data.navigation.available;
+        document.getElementById("navigation-message").textContent = data.navigation.message || (data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable");
         document.getElementById("take-control-message").textContent = state.manualControlActive ? "Manual teleop control active" : data.takeControl.message;
-        const startReason = state.safetyPaused ? "START required before mapping commands" : (!data.mapping.startAvailable ? "Start mapping service unavailable" : "");
-        const doneReason = !data.map ? "No map received yet" : (!data.mapping.doneBackendAvailable ? "No finalize backend; UI will freeze latest received map" : "");
-        const saveReason = saveDisabledReason(data);
-        document.getElementById("start-mapping").disabled = Boolean(startReason);
-        document.getElementById("start-mapping").title = startReason;
-        document.getElementById("done-mapping").disabled = !data.map;
-        document.getElementById("done-mapping").title = doneReason;
-        document.getElementById("retry-mapping").disabled = !state.frozenMap;
-        document.getElementById("save-safe-map").disabled = Boolean(saveReason);
-        document.getElementById("save-safe-map").title = saveReason;
-        if (startReason && !state.reviewMode) document.getElementById("workflow-message").textContent = startReason;
-        else if (saveReason && state.reviewMode) document.getElementById("workflow-message").textContent = saveReason;
+        const startMappingButton = document.getElementById("start-mapping");
+        if (startMappingButton) {
+          const startReason = state.safetyPaused ? "START required before mapping commands" : (!data.mapping.startAvailable ? "Start mapping service unavailable" : "");
+          const doneReason = !data.map ? "No map received yet" : (!data.mapping.doneBackendAvailable ? "No finalize backend; UI will freeze latest received map" : "");
+          const saveReason = saveDisabledReason(data);
+          startMappingButton.disabled = Boolean(startReason);
+          startMappingButton.title = startReason;
+          document.getElementById("done-mapping").disabled = !data.map;
+          document.getElementById("done-mapping").title = doneReason;
+          document.getElementById("retry-mapping").disabled = !state.frozenMap;
+          document.getElementById("save-safe-map").disabled = Boolean(saveReason);
+          document.getElementById("save-safe-map").title = saveReason;
+          if (startReason && !state.reviewMode) document.getElementById("workflow-message").textContent = startReason;
+          else if (saveReason && state.reviewMode) document.getElementById("workflow-message").textContent = saveReason;
+        }
         renderCandidates();
         renderArmButtons(data);
         updateSafetyButton();
@@ -1327,6 +1572,13 @@ def yaw_from_quaternion(q) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def quaternion_from_yaw(yaw: float) -> Quaternion:
+    quat = Quaternion()
+    quat.z = math.sin(yaw / 2.0)
+    quat.w = math.cos(yaw / 2.0)
+    return quat
+
+
 def _clean_text(value, default: str = "") -> str:
     if value is None:
         return default
@@ -1391,21 +1643,15 @@ class UiNode(Node):
         self.declare_parameter("teleop_queue_depth", DEFAULT_TELEOP_QUEUE_DEPTH)
         self.declare_parameter("image_topic", self._topics.get("baseCameraRaw") or "")
         self.declare_parameter("compressed_image_topic", self._topics["baseCameraCompressed"])
-        self.declare_parameter("camera_max_fps", DEFAULT_CAMERA_MAX_FPS)
+        self.declare_parameter("camera_max_fps", 0.0)
         self.declare_parameter("live_map_topic", self._topics["liveMap"])
         self._apply_topic_parameters()
 
         self._web_host = self.get_parameter("web_host").value
         self._web_port = int(self.get_parameter("web_port").value)
-        self._camera_max_fps = max(
-            0.1,
-            min(float(self.get_parameter("camera_max_fps").value), DEFAULT_CAMERA_MAX_FPS),
-        )
-        self._camera_frame_period = 1.0 / self._camera_max_fps
         self._frame_lock = threading.Lock()
         self._frames = {"base": None, "arm": None}
         self._frame_versions = {"base": 0, "arm": 0}
-        self._last_frame_update_time = {"base": 0.0, "arm": 0.0}
         self._shutting_down = threading.Event()
         self._active_page = "dashboard"
         self._camera_subscriptions = {}
@@ -1419,8 +1665,13 @@ class UiNode(Node):
         self._flower_counts = None
         self._external_report = None
         self._map = None
+        self._nav_plan = None
         self._last_status_map_sent_at = 0.0
         self._robot_pose = None
+        self._home_pose = self._normalized_pose(self._topics.get("homePose") or {})
+        self._active_nav_goal_handle = None
+        self._active_nav_label = ""
+        self._last_navigation_message = ""
         self._battery_percent = None
         self._last_battery_update_at = 0.0
         self._bed_observations = {}
@@ -1432,30 +1683,42 @@ class UiNode(Node):
 
         teleop_queue_depth = max(1, int(self.get_parameter("teleop_queue_depth").value))
         self._cmd_vel_publisher = self.create_publisher(Twist, self._topics["cmdVel"], teleop_queue_depth)
+        self._initial_pose_publisher = self.create_publisher(PoseWithCovarianceStamped, self._topics["initialPose"], 10) if self._topics.get("initialPose") else None
+        self._goal_pose_publisher = self.create_publisher(PoseStamped, self._topics["goalPose"], 10) if self._topics.get("goalPose") else None
         self._sync_camera_subscriptions()
         if self._topics.get("liveMap"):
-            self.create_subscription(OccupancyGrid, self._topics["liveMap"], self._on_map, 10)
+            map_qos = QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
+            self.create_subscription(OccupancyGrid, self._topics["liveMap"], self._on_map, map_qos)
         self.create_subscription(Odometry, self._topics["odom"], self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, self._topics["amclPose"], self._on_amcl_pose, 10)
+        if self._topics.get("navPlan"):
+            self.create_subscription(NavPath, self._topics["navPlan"], self._on_nav_plan, 10)
         self.create_subscription(String, self._topics["plantHealth"], self._on_plant_health, 10)
         self.create_subscription(String, self._topics["plantHealthReport"], self._on_plant_health_report, 10)
         if self._topics.get("flowerCounts"):
             self.create_subscription(String, self._topics["flowerCounts"], self._on_flower_counts, 10)
+        if self._topics.get("bedEnvironment"):
+            self.create_subscription(String, self._topics["bedEnvironment"], self._on_bed_environment, 10)
         self.create_subscription(BatteryState, self._topics["battery"], self._on_battery, 10)
         if PlantHealth is not None:
-            self.create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
+            self._try_create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
         if BedObservation is not None:
-            self.create_subscription(BedObservation, self._topics["bedObservation"], self._on_bed_observation, 10)
+            self._try_create_subscription(BedObservation, self._topics["bedObservation"], self._on_bed_observation, 10)
         if MappingStatus is not None:
-            self.create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
+            self._try_create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
         if TaskStatus is not None:
-            self.create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
+            self._try_create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
         if self._topics.get("artifactCandidates"):
             self.create_subscription(String, self._topics["artifactCandidates"], self._on_artifact_candidates, 10)
 
-        self._task_mode_client = self.create_client(SetRobotMode, self._topics["setTaskMode"]) if SetRobotMode is not None else None
-        self._arm_pose_client = self.create_client(SendNamedArmPose, self._topics["sendNamedArmPose"]) if SendNamedArmPose is not None else None
-        self._behavior_client = ActionClient(self, ExecuteBehavior, self._topics["executeBehavior"]) if ExecuteBehavior is not None else None
+        self._task_mode_client = self._try_create_client(SetRobotMode, self._topics["setTaskMode"]) if SetRobotMode is not None else None
+        self._arm_pose_client = self._try_create_client(SendNamedArmPose, self._topics["sendNamedArmPose"]) if SendNamedArmPose is not None else None
+        self._behavior_client = self._try_create_action_client(ExecuteBehavior, self._topics["executeBehavior"]) if ExecuteBehavior is not None else None
+        self._nav2_client = self._try_create_action_client(NavigateToPose, self._topics["navigateToPose"]) if NavigateToPose is not None and self._topics.get("navigateToPose") else None
         self._start_mapping_client = self.create_client(Trigger, self._topics["startMapping"]) if self._topics.get("startMapping") else None
         self._done_mapping_client = self.create_client(Trigger, self._topics["doneMapping"]) if self._topics.get("doneMapping") else None
         self._save_safe_map_client = self.create_client(Trigger, self._topics["saveSafeMap"]) if self._topics.get("saveSafeMap") else None
@@ -1467,6 +1730,27 @@ class UiNode(Node):
 
         self._log_startup_urls()
         self.get_logger().info(f"Publishing Twist to {self._topics['cmdVel']}; using real ROS/project data only")
+
+    def _try_create_subscription(self, msg_type, topic: str, callback, qos: int):
+        try:
+            return self.create_subscription(msg_type, topic, callback, qos)
+        except Exception as exc:
+            self.get_logger().warn(f"Disabled typed subscription {topic}: {exc}")
+            return None
+
+    def _try_create_client(self, srv_type, service: str):
+        try:
+            return self.create_client(srv_type, service)
+        except Exception as exc:
+            self.get_logger().warn(f"Disabled typed service client {service}: {exc}")
+            return None
+
+    def _try_create_action_client(self, action_type, action: str):
+        try:
+            return ActionClient(self, action_type, action)
+        except Exception as exc:
+            self.get_logger().warn(f"Disabled typed action client {action}: {exc}")
+            return None
 
     def _apply_topic_parameters(self) -> None:
         configured_raw_image = self.get_parameter("image_topic").get_parameter_value().string_value or None
@@ -1572,11 +1856,15 @@ class UiNode(Node):
                     "/api/teleop": node.set_teleop_command,
                     "/api/safety/toggle": node.toggle_safety,
                     "/api/navigation/goal": node.send_navigation_goal,
+                    "/api/navigation/initial_pose": node.set_initial_pose,
+                    "/api/navigation/cancel": node.cancel_navigation,
+                    "/api/navigation/home": node.go_home,
                     "/api/task_mode": node.set_task_mode,
                     "/api/take_control": node.take_control,
                     "/api/view": node.set_active_view,
                     "/api/camera/select": node.select_camera,
                     "/api/arm/pose": node.send_arm_pose,
+                    "/api/bed/inspect": node.inspect_bed,
                     "/api/mapping/start": node.start_mapping,
                     "/api/mapping/done": node.done_mapping,
                     "/api/mapping/save_safe_map": node.save_safe_map,
@@ -1624,7 +1912,7 @@ class UiNode(Node):
                         continue
                     version, frame = frame_version
                     if version == last_version:
-                        time.sleep(min(0.2, node._camera_frame_period))
+                        time.sleep(0.02)
                         continue
                     if frame is None:
                         time.sleep(0.2)
@@ -1636,7 +1924,7 @@ class UiNode(Node):
                         self.wfile.write(frame)
                         self.wfile.write(b"\r\n")
                         last_version = version
-                        time.sleep(node._camera_frame_period)
+                        time.sleep(0.001)
                     except (BrokenPipeError, ConnectionResetError):
                         break
 
@@ -1679,6 +1967,7 @@ class UiNode(Node):
             "report": self._external_report or self._computed_report(),
             "map": self._status_map_payload(),
             "robotPose": self._robot_pose,
+            "navPlan": copy.deepcopy(self._nav_plan),
             "batteryPercent": self._battery_percent,
             "bedObservations": copy.deepcopy(self._bed_observations),
             "mappingStatus": copy.deepcopy(self._mapping_status),
@@ -1686,7 +1975,16 @@ class UiNode(Node):
                 "available": self._service_ready(self._task_mode_client),
                 "current": self._task_status.get("current_state") if self._task_status else "",
             },
-            "navigation": {"available": self._action_ready(self._behavior_client)},
+            "navigation": {
+                "available": self._navigation_available(),
+                "nav2Available": self._action_ready(self._nav2_client),
+                "behaviorAvailable": self._action_ready(self._behavior_client),
+                "initialPoseAvailable": self._initial_pose_publisher is not None,
+                "goalPoseAvailable": self._goal_pose_publisher is not None,
+                "active": self._active_nav_goal_handle is not None,
+                "message": self._navigation_message(),
+            },
+            "behaviorAvailable": self._action_ready(self._behavior_client),
             "takeControl": {
                 "available": self._action_ready(self._behavior_client),
                 "message": (
@@ -1772,27 +2070,172 @@ class UiNode(Node):
         self._publish_active_twist()
         return {"ok": True, "message": "Teleop command accepted"}
 
+    def _navigation_available(self) -> bool:
+        return bool(
+            self._action_ready(self._nav2_client)
+            or self._goal_pose_publisher is not None
+            or self._action_ready(self._behavior_client)
+        )
+
+    def _navigation_message(self) -> str:
+        if self._last_navigation_message:
+            return self._last_navigation_message
+        if self._action_ready(self._nav2_client):
+            return "Nav2 NavigateToPose backend available"
+        if self._goal_pose_publisher is not None:
+            return "Goal pose publisher available"
+        if self._action_ready(self._behavior_client):
+            return "Behavior navigation backend available"
+        return "Navigation backend unavailable"
+
+    def _normalized_pose(self, payload) -> dict | None:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            x = float(payload["x"])
+            y = float(payload["y"])
+            yaw = float(payload.get("yaw", 0.0))
+        except (KeyError, TypeError, ValueError):
+            return None
+        return {"x": x, "y": y, "yaw": yaw}
+
+    def _pose_stamped(self, pose: dict) -> PoseStamped:
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        msg.pose.position.x = pose["x"]
+        msg.pose.position.y = pose["y"]
+        msg.pose.position.z = 0.0
+        msg.pose.orientation = quaternion_from_yaw(pose.get("yaw", 0.0))
+        return msg
+
     def send_navigation_goal(self, payload) -> dict:
         self._publish_twist(0.0, 0.0, 0.0)
         if self._safety_paused:
             return {"ok": False, "message": "START required before navigation"}
+        pose = self._normalized_pose(payload)
+        if pose is None:
+            return {"ok": False, "message": "No valid map position selected"}
+        return self._send_navigation_pose(pose, "selected map position")
+
+    def _send_navigation_pose(self, pose: dict, label: str) -> dict:
+        if self._action_ready(self._nav2_client):
+            goal = NavigateToPose.Goal()
+            goal.pose = self._pose_stamped(pose)
+            future = self._nav2_client.send_goal_async(
+                goal,
+                feedback_callback=lambda feedback: self._on_nav2_feedback(label, feedback),
+            )
+            future.add_done_callback(lambda done: self._on_nav2_goal_response(label, done))
+            self._active_nav_label = label
+            self._last_navigation_message = f"Sent Nav2 goal to {label}"
+            return {"ok": True, "message": self._last_navigation_message}
+
+        if self._goal_pose_publisher is not None:
+            self._goal_pose_publisher.publish(self._pose_stamped(pose))
+            self._last_navigation_message = f"Published goal pose for {label}"
+            return {"ok": True, "message": self._last_navigation_message}
+
         if self._behavior_client is None or BehaviorType is None:
             return {"ok": False, "message": "Navigation backend unavailable"}
         if not self._behavior_client.server_is_ready():
             return {"ok": False, "message": "Navigation backend unavailable"}
-        try:
-            x = float(payload["x"])
-            y = float(payload["y"])
-        except (KeyError, TypeError, ValueError):
-            return {"ok": False, "message": "No valid map position selected"}
         goal = ExecuteBehavior.Goal()
         goal.behavior.type = BehaviorType.NAVIGATE
-        goal.target_pose.position.x = x
-        goal.target_pose.position.y = y
+        goal.target_pose.position.x = pose["x"]
+        goal.target_pose.position.y = pose["y"]
         goal.target_pose.position.z = 0.0
-        goal.target_pose.orientation.w = 1.0
+        goal.target_pose.orientation = quaternion_from_yaw(pose.get("yaw", 0.0))
         self._behavior_client.send_goal_async(goal)
-        return {"ok": True, "message": "Navigation goal sent to real behavior action"}
+        self._last_navigation_message = f"Navigation goal for {label} sent to behavior action"
+        return {"ok": True, "message": self._last_navigation_message}
+
+    def _on_nav2_feedback(self, label: str, feedback_msg) -> None:
+        feedback = getattr(feedback_msg, "feedback", None)
+        distance = getattr(feedback, "distance_remaining", None)
+        if distance is not None:
+            self._last_navigation_message = f"Navigating to {label}: {float(distance):.2f} m remaining"
+
+    def _on_nav2_goal_response(self, label: str, future) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self._active_nav_goal_handle = None
+            self._last_navigation_message = f"Nav2 goal error: {exc}"
+            return
+        if goal_handle is None or not goal_handle.accepted:
+            self._active_nav_goal_handle = None
+            self._last_navigation_message = f"Nav2 rejected goal to {label}"
+            return
+        self._active_nav_goal_handle = goal_handle
+        self._last_navigation_message = f"Nav2 accepted goal to {label}"
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(lambda done: self._on_nav2_result(label, done))
+
+    def _on_nav2_result(self, label: str, future) -> None:
+        self._active_nav_goal_handle = None
+        try:
+            future.result()
+        except Exception as exc:
+            self._last_navigation_message = f"Navigation to {label} failed: {exc}"
+            return
+        self._last_navigation_message = f"Navigation to {label} finished"
+
+    def set_initial_pose(self, payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before localization commands"}
+        if self._initial_pose_publisher is None:
+            return {"ok": False, "message": "Initial pose publisher unavailable"}
+        pose = self._normalized_pose(payload)
+        if pose is None:
+            return {"ok": False, "message": "No valid map position selected"}
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = "map"
+        msg.pose.pose.position.x = pose["x"]
+        msg.pose.pose.position.y = pose["y"]
+        msg.pose.pose.orientation = quaternion_from_yaw(pose.get("yaw", 0.0))
+        msg.pose.covariance[0] = 0.25
+        msg.pose.covariance[7] = 0.25
+        msg.pose.covariance[35] = 0.0685
+        for _index in range(10):
+            msg.header.stamp = self.get_clock().now().to_msg()
+            self._initial_pose_publisher.publish(msg)
+            time.sleep(0.02)
+        self._last_navigation_message = f"Published initial pose at {pose['x']:.2f}, {pose['y']:.2f}"
+        return {"ok": True, "message": self._last_navigation_message}
+
+    def cancel_navigation(self, _payload) -> dict:
+        if self._active_nav_goal_handle is None:
+            self._last_navigation_message = "No active Nav2 goal to cancel"
+            return {"ok": False, "message": self._last_navigation_message}
+        self._active_nav_goal_handle.cancel_goal_async()
+        self._active_nav_goal_handle = None
+        self._last_navigation_message = "Cancel navigation requested"
+        return {"ok": True, "message": self._last_navigation_message}
+
+    def go_home(self, _payload) -> dict:
+        self._publish_twist(0.0, 0.0, 0.0)
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before navigation"}
+        if self._home_pose is None:
+            return {"ok": False, "message": "Home pose is not configured"}
+        return self._send_navigation_pose(self._home_pose, "home")
+
+    def inspect_bed(self, payload) -> dict:
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before bed inspection"}
+        if self._behavior_client is None or BehaviorType is None:
+            return {"ok": False, "message": "Bed inspection backend unavailable"}
+        if not self._behavior_client.server_is_ready():
+            return {"ok": False, "message": "Bed inspection backend unavailable"}
+        bed_id = str(payload.get("bed_id", "")).strip()
+        if not bed_id:
+            return {"ok": False, "message": "No bed selected"}
+        goal = ExecuteBehavior.Goal()
+        goal.behavior.type = BehaviorType.INSPECT_BED
+        goal.target_id = bed_id
+        self._behavior_client.send_goal_async(goal)
+        return {"ok": True, "message": f"Inspect bed {bed_id} requested"}
 
     def set_task_mode(self, payload) -> dict:
         if self._safety_paused:
@@ -1878,8 +2321,20 @@ class UiNode(Node):
             return {"ok": False, "message": "Unknown arm pose"}
         request = SendNamedArmPose.Request()
         request.pose_name = pose
-        self._arm_pose_client.call_async(request)
-        return {"ok": True, "message": f"Requested arm pose {pose}"}
+        future = self._arm_pose_client.call_async(request)
+        deadline = time.monotonic() + 3.0
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not future.done():
+            return {"ok": False, "message": f"Requested arm pose {pose}; waiting for backend response"}
+        try:
+            response = future.result()
+        except Exception as exc:
+            return {"ok": False, "message": f"Arm pose backend error: {exc}"}
+        return {
+            "ok": bool(response.accepted),
+            "message": response.message or f"Requested arm pose {pose}",
+        }
 
     def start_mapping(self, _payload) -> dict:
         if self._safety_paused:
@@ -1979,13 +2434,9 @@ class UiNode(Node):
     def _on_compressed_image(self, camera: str, msg: CompressedImage) -> None:
         if msg.format and "jpeg" not in msg.format.lower() and "jpg" not in msg.format.lower():
             return
-        now = time.monotonic()
-        if now - self._last_frame_update_time.get(camera, 0.0) < self._camera_frame_period:
-            return
         with self._frame_lock:
             self._frames[camera] = bytes(msg.data)
             self._frame_versions[camera] = self._frame_versions.get(camera, 0) + 1
-            self._last_frame_update_time[camera] = now
 
     def _on_map(self, msg: OccupancyGrid) -> None:
         self._map = {
@@ -1999,6 +2450,20 @@ class UiNode(Node):
             "data": list(msg.data),
             "frameId": msg.header.frame_id,
             "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _on_nav_plan(self, msg: NavPath) -> None:
+        self._nav_plan = {
+            "frameId": msg.header.frame_id,
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "points": [
+                {
+                    "x": pose.pose.position.x,
+                    "y": pose.pose.position.y,
+                    "yaw": yaw_from_quaternion(pose.pose.orientation),
+                }
+                for pose in msg.poses
+            ],
         }
 
     def _on_artifact_candidates(self, msg: String) -> None:
@@ -2084,6 +2549,9 @@ class UiNode(Node):
             "notes": msg.notes,
             "position": {"x": msg.position.x, "y": msg.position.y, "z": msg.position.z},
         }
+        side = self._side_from_notes(msg.notes)
+        if side:
+            payload["side"] = side
         self._update_plant_from_payload(flower_id, payload)
         self._external_report = None
 
@@ -2109,16 +2577,57 @@ class UiNode(Node):
         self._flower_counts = counts
         self._external_report = None
 
+    def _on_bed_environment(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f"Ignoring invalid bed environment JSON: {exc}")
+            return
+        bed_id = str(payload.get("bed_id", "")).strip()
+        if not bed_id:
+            self.get_logger().warn("Ignoring bed environment JSON without bed_id")
+            return
+        bed = self._bed_observations.setdefault(
+            bed_id,
+            {
+                "bed_id": payload.get("bed_id"),
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": True,
+            },
+        )
+        bed["bed_id"] = payload.get("bed_id", bed.get("bed_id"))
+        bed["available"] = True
+        bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if "co2_ppm" in payload:
+            bed["co2"] = payload["co2_ppm"]
+        elif "co2" in payload:
+            bed["co2"] = payload["co2"]
+        if "humidity_percent" in payload:
+            bed["humidity"] = payload["humidity_percent"]
+        elif "humidity" in payload:
+            bed["humidity"] = payload["humidity"]
+        if "bugs_detected" in payload:
+            bed["bugs_detected"] = bool(payload["bugs_detected"])
+        if "side_counts" in payload and isinstance(payload["side_counts"], dict):
+            bed["side_counts"] = copy.deepcopy(payload["side_counts"])
+
     def _on_bed_observation(self, msg) -> None:
         bed_id = str(msg.bed_id)
-        self._bed_observations[bed_id] = {
-            "bed_id": msg.bed_id,
-            "co2": None,
-            "humidity": None,
-            "bugs_detected": None,
-            "available": True,
-            "last_seen": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
+        bed = self._bed_observations.setdefault(
+            bed_id,
+            {
+                "bed_id": msg.bed_id,
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": True,
+            },
+        )
+        bed["bed_id"] = msg.bed_id
+        bed["available"] = True
+        bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def _on_mapping_status(self, msg) -> None:
         self._mapping_status = {
@@ -2149,12 +2658,20 @@ class UiNode(Node):
 
     def _update_plant_from_payload(self, flower_id: str, payload: dict) -> None:
         plant = self._plants.setdefault(flower_id, {"flower_id": flower_id})
-        for key in ("bed_id", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
+        for key in ("bed_id", "side", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
             if key in payload:
                 plant[key] = payload[key]
         for key in ("bug_detected", "flower_detected", "ready_for_harvest"):
             if key in payload:
                 plant[key] = bool(payload[key])
+
+    def _side_from_notes(self, notes: str) -> str:
+        lowered = str(notes or "").lower()
+        if "side:left" in lowered or "side=left" in lowered:
+            return "left"
+        if "side:right" in lowered or "side=right" in lowered:
+            return "right"
+        return ""
 
     def _on_plant_health_report(self, msg: String) -> None:
         try:
@@ -2227,7 +2744,23 @@ class UiNode(Node):
         self._behavior_client.send_goal_async(goal)
 
     def _bed_payload(self) -> list[dict]:
-        return sorted(copy.deepcopy(list(self._bed_observations.values())), key=lambda bed: str(bed.get("bed_id", "")))
+        beds = copy.deepcopy(list(self._bed_observations.values()))
+        for bed in beds:
+            bed_plants = [
+                copy.deepcopy(plant)
+                for plant in self._plants.values()
+                if str(plant.get("bed_id", "")) == str(bed.get("bed_id", ""))
+            ]
+            bed["plants"] = bed_plants
+            if bed_plants:
+                bed["bugs_detected"] = any(bool(plant.get("bug_detected")) for plant in bed_plants)
+                side_counts = {"left": 0, "right": 0}
+                for index, plant in enumerate(bed_plants):
+                    side = str(plant.get("side") or ("left" if index % 2 == 0 else "right")).lower()
+                    if side in side_counts:
+                        side_counts[side] += 1
+                bed["side_counts"] = side_counts
+        return sorted(beds, key=lambda bed: str(bed.get("bed_id", "")))
 
     def _computed_report(self) -> dict:
         plants = list(self._plants.values())
