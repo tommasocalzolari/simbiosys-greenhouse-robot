@@ -20,10 +20,6 @@ class BugDetectionNode(Node):
         self.declare_parameter("camera_topic", "/gripper_camera/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("model_path", default_model_path)
-        self.declare_parameter("min_tag_area", 300.0)
-        self.declare_parameter("max_tag_area", 50000.0)
-        self.declare_parameter("dark_pixel_ratio", 0.15)
-        self.declare_parameter("blob_ratio_threshold", 0.4)
         self.declare_parameter("camera_distance_mm", 200.0)
 
         self._camera_topic = (
@@ -37,20 +33,6 @@ class BugDetectionNode(Node):
             self._subscribed_camera_topic = f"{self._camera_topic}/compressed"
         self._model_path = (
             self.get_parameter("model_path").get_parameter_value().string_value
-        )
-        self._min_tag_area = (
-            self.get_parameter("min_tag_area").get_parameter_value().double_value
-        )
-        self._max_tag_area = (
-            self.get_parameter("max_tag_area").get_parameter_value().double_value
-        )
-        self._dark_pixel_ratio = (
-            self.get_parameter("dark_pixel_ratio").get_parameter_value().double_value
-        )
-        self._blob_ratio_threshold = (
-            self.get_parameter("blob_ratio_threshold")
-            .get_parameter_value()
-            .double_value
         )
         self._camera_distance_mm = (
             self.get_parameter("camera_distance_mm").get_parameter_value().double_value
@@ -166,6 +148,12 @@ class BugDetectionNode(Node):
         for box in results[0].boxes:
             if int(box.cls[0]) == self._YOLO_BUG_CLASS_ID:
                 bug_count += 1
+
+        if bug_count > 0:
+            self.get_logger().info(
+                f"Bug detected! frame_count={bug_count}, "
+                f"bed_id={self._current_bed_id}"
+            )
 
         return bug_count
 
