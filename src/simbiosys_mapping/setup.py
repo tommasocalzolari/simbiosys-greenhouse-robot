@@ -13,7 +13,12 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         (
             "share/" + package_name,
-            ["package.xml", "README.md", "INTEGRATION_README.md"],
+            [
+                "package.xml",
+                "README.md",
+                "INTEGRATION_README.md",
+                "UI_INTERFACE_README.md",
+            ],
         ),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
@@ -36,6 +41,7 @@ setup(
             "mapping_status_node = simbiosys_mapping.mapping_status_node:main",
             "getmap_node = simbiosys_mapping.getmap_node:main",
             "initial_pose_node = simbiosys_mapping.initial_pose_node:main",
+            "map_post_processor_node = simbiosys_mapping.map_post_processor_node:main",
         ],
     },
 )

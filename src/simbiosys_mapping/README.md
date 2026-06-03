@@ -1,3 +1,15 @@
+# TO DO:
+
+- recieve home pose and goal pose from UI and then build checkpoints from all the beds to have autonomous navigation
+
+ros2 launch simbiosys_mapping getmap.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
+
+ros2 launch simbiosys_mapping navigation.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
+
 # simbiosys_mapping
 
 Mapping, localization, and navigation package for the SimBioSys MIRTE Master
@@ -28,6 +40,7 @@ simbiosys_mapping/
   launch/
     getmap.launch.py
     localization.launch.py
+    map_post_processing.launch.py
     navigation.launch.py
   rviz/
     getmap.rviz
@@ -36,9 +49,11 @@ simbiosys_mapping/
   simbiosys_mapping/
     getmap_node.py
     initial_pose_node.py
+    map_post_processor_node.py
     mapping_status_node.py
   worlds/
     static_obstacles.world
+    greenhouse_8_beds.world
   package.xml
   setup.py
   setup.cfg
@@ -50,6 +65,7 @@ Important files:
 | --- | --- |
 | `launch/getmap.launch.py` | Starts SLAM mapping with `slam_toolbox`, optional Gazebo, RViz, and map auto-save. |
 | `launch/localization.launch.py` | Starts standalone AMCL localization on a saved map. |
+| `launch/map_post_processing.launch.py` | Starts the map cleanup and annotation helper node. |
 | `launch/navigation.launch.py` | Starts map server, AMCL, Nav2 planner/controller/BT navigator, optional Gazebo, and RViz. |
 | `config/slam_toolbox_mapping.yaml` | SLAM Toolbox mapping parameters. |
 | `config/amcl_localization.yaml` | AMCL and map-server parameters. |
@@ -57,10 +73,13 @@ Important files:
 | `behavior_trees/nav2_tight_space_backup_bt_deadband.xml` | Custom Nav2 behavior tree with local clear and backup recovery. |
 | `simbiosys_mapping/getmap_node.py` | Saves `/map` as `.yaml` and `.pgm` files in the workspace `maps/` folder. |
 | `simbiosys_mapping/initial_pose_node.py` | Optional scripted AMCL initial-pose publisher. Navigation does not use it by default. |
-| `worlds/static_obstacles.world` | Gazebo world for repeatable mapping/localization/navigation tests. |
+| `simbiosys_mapping/map_post_processor_node.py` | Cleans a saved occupancy map in place and records ordered RViz annotations. |
+| `worlds/static_obstacles.world` | Small Gazebo world for repeatable mapping/localization/navigation tests. |
+| `worlds/greenhouse_8_beds.world` | Greenhouse-style Gazebo world with eight rectangular flower beds in a 4 by 2 layout. |
 
 Extra debugging documents:
 
+- [`UI_INTERFACE_README.md`](UI_INTERFACE_README.md)
 - [`docs/slam_debug_tuning.md`](../../docs/slam_debug_tuning.md)
 - [`docs/localization_debug_tuning.md`](../../docs/localization_debug_tuning.md)
 - [`docs/topic_reference.md`](../../docs/topic_reference.md)
@@ -214,6 +233,103 @@ correctly:
 cd ~/ro47007_mirte_ws
 ```
 
+## Map Post Processing And Annotation
+
+The post-processing node is an offline step to run after SLAM mapping has saved
+the map. It loads the saved map, cleans it, overwrites the same map files, and
+publishes the cleaned result on `/map` so RViz can display it.
+
+Default input and output:
+
+```text
+maps/mirte_map.yaml
+maps/mirte_map.pgm
+```
+
+Run the full cleanup and annotation view:
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py
+```
+
+By default this:
+
+- loads `maps/mirte_map.yaml`
+- removes small occupied artifacts
+- straightens jagged occupied edges
+- fills small closed obstacles, such as flower beds
+- overwrites `maps/mirte_map.yaml` and `maps/mirte_map.pgm`
+- publishes the cleaned map on `/map`
+- opens RViz with `2D Pose Estimate`, `2D Goal Pose`, and `Publish Point`
+- starts waiting for manual annotations
+
+Use another saved map if needed:
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py \
+  map_yaml:=maps/your_map.yaml
+```
+
+If the node is already running and you want to process again:
+
+```bash
+ros2 service call /map_post_processor_node/process_map std_srvs/srv/Trigger "{}"
+```
+
+Useful cleanup options:
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py \
+  min_occupied_cluster_size:=2 \
+  straighten_kernel_size:=5 \
+  closed_obstacle_max_area_ratio:=0.15
+```
+
+This is a cleanup helper, not a replacement for a good SLAM map. Inspect the
+cleaned `/map` in RViz before using it for navigation.
+
+### Manual Annotation
+
+The annotation order is:
+
+1. `2D Pose Estimate` for the home pose.
+2. `2D Goal Pose` for the final pose.
+3. `Publish Point` for each flower bed start position, clicked in bed-number
+   order.
+
+The annotation markers are published on:
+
+```text
+/map_annotations  
+```
+
+Finish and save:
+
+```bash
+ros2 service call /map_post_processor_node/finish_annotation std_srvs/srv/Trigger "{}"
+```
+
+Default annotation output:
+
+```text
+maps/mirte_map_annotations.json
+```
+
+If you click the wrong flower bed point:
+
+```bash
+ros2 service call /map_post_processor_node/undo_last_bed std_srvs/srv/Trigger "{}"
+```
+
+If you want to restart all annotations:
+
+```bash
+ros2 service call /map_post_processor_node/start_annotation std_srvs/srv/Trigger "{}"
+```
+
+Do not run Nav2 navigation while using `2D Goal Pose` for annotation, because
+the same `/goal_pose` topic is used by Nav2 to send a real navigation goal.
+
 ## SLAM Mapping
 
 Simulation mapping:
@@ -226,6 +342,14 @@ ros2 launch simbiosys_mapping getmap.launch.py simulation:=true
 
 ```bash
 ros2 launch simbiosys_mapping getmap.launch.py
+```
+
+Use the greenhouse test world:
+
+```bash
+ros2 launch simbiosys_mapping getmap.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 Real robot mapping:
@@ -365,6 +489,14 @@ Run simulation navigation:
 
 ```bash
 ros2 launch simbiosys_mapping navigation.launch.py simulation:=true
+```
+
+Run simulation navigation in the greenhouse world:
+
+```bash
+ros2 launch simbiosys_mapping navigation.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 The navigation launch always loads:

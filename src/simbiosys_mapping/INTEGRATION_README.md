@@ -19,8 +19,8 @@ consistent.
 - A custom Nav2 behavior tree for tight-space recovery.
 - RViz configs for mapping, localization, and navigation.
 - Gazebo static-obstacle world for simulation tests.
-- Python helper nodes for map saving, optional initial-pose publishing, and
-  mapping status checks.
+- Python helper nodes for map saving, map cleanup/annotation, optional
+  initial-pose publishing, and mapping status checks.
 
 It does not implement SLAM, AMCL, or planning algorithms from scratch.
 
@@ -45,6 +45,7 @@ src/simbiosys_mapping/
   launch/
     getmap.launch.py
     localization.launch.py
+    map_post_processing.launch.py
     navigation.launch.py
   rviz/
     getmap.rviz
@@ -54,9 +55,11 @@ src/simbiosys_mapping/
     __init__.py
     getmap_node.py
     initial_pose_node.py
+    map_post_processor_node.py
     mapping_status_node.py
   worlds/
     static_obstacles.world
+    greenhouse_8_beds.world
 ```
 
 Do not transfer generated files:
@@ -169,6 +172,10 @@ dwb_core
 dwb_critics
 rviz2
 mirte_gazebo
+python3-numpy
+python3-opencv
+python3-yaml
+visualization_msgs
 ```
 
 ## Launch Files
@@ -181,6 +188,14 @@ Can run in simulation:
 
 ```bash
 ros2 launch simbiosys_mapping getmap.launch.py simulation:=true
+```
+
+Use the greenhouse world:
+
+```bash
+ros2 launch simbiosys_mapping getmap.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 or on the real robot:
@@ -245,6 +260,53 @@ map -> odom
 Initial pose is manual by default. The operator should use RViz `2D Pose
 Estimate`.
 
+### `launch/map_post_processing.launch.py`
+
+Starts the standalone offline map cleanup and annotation helper.
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py
+```
+
+It loads, cleans, and overwrites the saved map:
+
+```text
+maps/mirte_map.yaml
+```
+
+Trigger processing:
+
+```bash
+ros2 service call /map_post_processor_node/process_map std_srvs/srv/Trigger "{}"
+```
+
+Main outputs:
+
+```text
+/map
+/map_annotations
+maps/mirte_map.yaml
+maps/mirte_map.pgm
+maps/mirte_map_annotations.json
+```
+
+Annotation input topics:
+
+```text
+/initialpose
+/goal_pose
+/clicked_point
+```
+
+The intended RViz annotation order is:
+
+1. `2D Pose Estimate` for home pose.
+2. `2D Goal Pose` for final pose.
+3. `Publish Point` for each flower bed start position in bed-number order.
+
+Do not run Nav2 while using `/goal_pose` for annotation, because Nav2 also uses
+that topic for real goals.
+
 ### `launch/navigation.launch.py`
 
 Starts the full navigation stack. It is self-contained and starts:
@@ -268,6 +330,14 @@ Simulation:
 
 ```bash
 ros2 launch simbiosys_mapping navigation.launch.py simulation:=true
+```
+
+Simulation in the greenhouse world:
+
+```bash
+ros2 launch simbiosys_mapping navigation.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 It always loads:
@@ -396,6 +466,7 @@ Keep these for now:
 | --- | --- | --- |
 | `simbiosys_mapping/getmap_node.py` | `getmap_node` | Saves `/map` to the workspace `maps/` folder automatically or on service call. |
 | `simbiosys_mapping/initial_pose_node.py` | `initial_pose_node` | Optional scripted AMCL initial-pose publisher. Disabled in normal navigation use. |
+| `simbiosys_mapping/map_post_processor_node.py` | `map_post_processor_node` | Cleans a saved occupancy map in place and records home/final/flower-bed annotations. |
 | `simbiosys_mapping/mapping_status_node.py` | `mapping_status_node` | Small topic-status helper for mapping debug. |
 
 ## Runtime Workflow
@@ -414,6 +485,13 @@ Mapping:
 
 ```bash
 ros2 launch simbiosys_mapping getmap.launch.py simulation:=false
+```
+
+Map cleanup and annotation:
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py
+ros2 service call /map_post_processor_node/process_map std_srvs/srv/Trigger "{}"
 ```
 
 Localization only:
@@ -439,6 +517,7 @@ colcon build --packages-select simbiosys_mapping
 source install/setup.bash
 ros2 launch simbiosys_mapping getmap.launch.py --show-args
 ros2 launch simbiosys_mapping localization.launch.py --show-args
+ros2 launch simbiosys_mapping map_post_processing.launch.py --show-args
 ros2 launch simbiosys_mapping navigation.launch.py --show-args
 ```
 
@@ -446,6 +525,12 @@ Check installed behavior tree:
 
 ```bash
 test -f install/share/simbiosys_mapping/behavior_trees/nav2_tight_space_backup_bt_deadband.xml
+```
+
+Check installed greenhouse world:
+
+```bash
+test -f install/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 Check robot TF:
