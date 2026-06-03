@@ -1,6 +1,14 @@
 # TO DO:
-- provare prima i chekcpoint sul robot vero
-- provare a connettere con strafing
+
+- recieve home pose and goal pose from UI and then build checkpoints from all the beds to have autonomous navigation
+
+ros2 launch simbiosys_mapping getmap.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
+
+ros2 launch simbiosys_mapping navigation.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 
 # simbiosys_mapping
 
@@ -30,26 +38,22 @@ simbiosys_mapping/
     amcl_localization.yaml
     nav2_navigation.yaml
   launch/
-    checkpoint_navigation.launch.py
     getmap.launch.py
     localization.launch.py
-    map_annotation.launch.py
     map_post_processing.launch.py
     navigation.launch.py
   rviz/
     getmap.rviz
     localization.rviz
-    map_annotation.rviz
     navigation.rviz
   simbiosys_mapping/
-    checkpoint_navigator_node.py
     getmap_node.py
     initial_pose_node.py
-    map_annotation_node.py
     map_post_processor_node.py
     mapping_status_node.py
   worlds/
     static_obstacles.world
+    greenhouse_8_beds.world
   package.xml
   setup.py
   setup.cfg
@@ -59,25 +63,23 @@ Important files:
 
 | File | Purpose |
 | --- | --- |
-| `launch/checkpoint_navigation.launch.py` | Starts the command-driven checkpoint navigator that sends one Nav2 goal at a time. |
 | `launch/getmap.launch.py` | Starts SLAM mapping with `slam_toolbox`, optional Gazebo, RViz, and map auto-save. |
 | `launch/localization.launch.py` | Starts standalone AMCL localization on a saved map. |
-| `launch/map_annotation.launch.py` | Opens a saved map read-only and records home/checkpoint annotations. |
-| `launch/map_post_processing.launch.py` | Older cleanup tool that modifies the saved map. Do not use it for annotation-only work. |
+| `launch/map_post_processing.launch.py` | Starts the map cleanup and annotation helper node. |
 | `launch/navigation.launch.py` | Starts map server, AMCL, Nav2 planner/controller/BT navigator, optional Gazebo, and RViz. |
 | `config/slam_toolbox_mapping.yaml` | SLAM Toolbox mapping parameters. |
 | `config/amcl_localization.yaml` | AMCL and map-server parameters. |
 | `config/nav2_navigation.yaml` | Nav2 behavior tree, planner, controller, behavior server, and costmap parameters. |
 | `behavior_trees/nav2_tight_space_backup_bt_deadband.xml` | Custom Nav2 behavior tree with local clear and backup recovery. |
-| `simbiosys_mapping/checkpoint_navigator_node.py` | Reads map annotations and advances through checkpoints using `/checkpoint_commands`. |
 | `simbiosys_mapping/getmap_node.py` | Saves `/map` as `.yaml` and `.pgm` files in the workspace `maps/` folder. |
 | `simbiosys_mapping/initial_pose_node.py` | Optional scripted AMCL initial-pose publisher. Navigation does not use it by default. |
-| `simbiosys_mapping/map_annotation_node.py` | Annotation-only node. It never writes map YAML/PGM files. |
-| `simbiosys_mapping/map_post_processor_node.py` | Older offline saved-map cleanup node that can overwrite map files. |
-| `worlds/static_obstacles.world` | Gazebo world for repeatable mapping/localization/navigation tests. |
+| `simbiosys_mapping/map_post_processor_node.py` | Cleans a saved occupancy map in place and records ordered RViz annotations. |
+| `worlds/static_obstacles.world` | Small Gazebo world for repeatable mapping/localization/navigation tests. |
+| `worlds/greenhouse_8_beds.world` | Greenhouse-style Gazebo world with eight rectangular flower beds in a 4 by 2 layout. |
 
 Extra debugging documents:
 
+- [`UI_INTERFACE_README.md`](UI_INTERFACE_README.md)
 - [`docs/slam_debug_tuning.md`](../../docs/slam_debug_tuning.md)
 - [`docs/localization_debug_tuning.md`](../../docs/localization_debug_tuning.md)
 - [`docs/topic_reference.md`](../../docs/topic_reference.md)
@@ -231,101 +233,102 @@ correctly:
 cd ~/ro47007_mirte_ws
 ```
 
-## Map Annotation
+## Map Post Processing And Annotation
 
-Use this when you only want to annotate home and checkpoints. This launch does
-not modify `maps/mirte_map.yaml` or `maps/mirte_map.pgm`.
+The post-processing node is an offline step to run after SLAM mapping has saved
+the map. It loads the saved map, cleans it, overwrites the same map files, and
+publishes the cleaned result on `/map` so RViz can display it.
 
-```bash
-ros2 launch simbiosys_mapping map_annotation.launch.py
+Default input and output:
+
+```text
+maps/mirte_map.yaml
+maps/mirte_map.pgm
 ```
 
-By default this reads `maps/mirte_map.yaml`, publishes it on `/map`, opens RViz,
-and saves annotations to `maps/mirte_map_annotations.json`.
+Run the full cleanup and annotation view:
 
-Annotation order in RViz:
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py
+```
+
+By default this:
+
+- loads `maps/mirte_map.yaml`
+- removes small occupied artifacts
+- straightens jagged occupied edges
+- fills small closed obstacles, such as flower beds
+- overwrites `maps/mirte_map.yaml` and `maps/mirte_map.pgm`
+- publishes the cleaned map on `/map`
+- opens RViz with `2D Pose Estimate`, `2D Goal Pose`, and `Publish Point`
+- starts waiting for manual annotations
+
+Use another saved map if needed:
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py \
+  map_yaml:=maps/your_map.yaml
+```
+
+If the node is already running and you want to process again:
+
+```bash
+ros2 service call /map_post_processor_node/process_map std_srvs/srv/Trigger "{}"
+```
+
+Useful cleanup options:
+
+```bash
+ros2 launch simbiosys_mapping map_post_processing.launch.py \
+  min_occupied_cluster_size:=2 \
+  straighten_kernel_size:=5 \
+  closed_obstacle_max_area_ratio:=0.15
+```
+
+This is a cleanup helper, not a replacement for a good SLAM map. Inspect the
+cleaned `/map` in RViz before using it for navigation.
+
+### Manual Annotation
+
+The annotation order is:
 
 1. `2D Pose Estimate` for the home pose.
-2. `2D Goal Pose` for each checkpoint in the order the robot should visit them.
+2. `2D Goal Pose` for the final pose.
+3. `Publish Point` for each flower bed start position, clicked in bed-number
+   order.
 
-Finish and save the annotations:
+The annotation markers are published on:
 
-```bash
-ros2 service call /map_annotation_node/finish_annotation std_srvs/srv/Trigger "{}"
+```text
+/map_annotations  
 ```
 
-Default annotation file:
+Finish and save:
+
+```bash
+ros2 service call /map_post_processor_node/finish_annotation std_srvs/srv/Trigger "{}"
+```
+
+Default annotation output:
 
 ```text
 maps/mirte_map_annotations.json
 ```
 
-If you want to process another saved map:
+If you click the wrong flower bed point:
 
 ```bash
-ros2 launch simbiosys_mapping map_annotation.launch.py \
-  map_yaml:=maps/other_map.yaml
+ros2 service call /map_post_processor_node/undo_last_bed std_srvs/srv/Trigger "{}"
 ```
 
-The older `map_post_processing.launch.py` still exists, but it cleans and
-overwrites the map. Do not use it if you only want annotations.
-
-## Checkpoint Navigation
-
-Checkpoint navigation uses `maps/mirte_map_annotations.json` and Nav2. It does
-not create one long path through every checkpoint. It sends one `NavigateToPose`
-goal only after a command is received.
-
-Expected order:
-
-```text
-home pose -> checkpoint_1 -> checkpoint_2 -> ...
-```
-
-The robot should already be placed at the home pose and localized before the
-first command. The node does not navigate to home.
-
-Terminal 1, start normal navigation:
+If you want to restart all annotations:
 
 ```bash
-ros2 launch simbiosys_mapping navigation.launch.py simulation:=false
+ros2 service call /map_post_processor_node/start_annotation std_srvs/srv/Trigger "{}"
 ```
 
-Terminal 2, start checkpoint navigation:
-
-```bash
-ros2 launch simbiosys_mapping checkpoint_navigation.launch.py
-```
-
-Terminal 3, send one checkpoint command at a time:
-
-```bash
-ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: next}"
-```
-
-After the robot arrives, send `next` again for the next checkpoint.
-
-Useful commands:
-
-```bash
-ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: status}"
-ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: cancel}"
-ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: skip}"
-ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: reset}"
-ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: reload}"
-```
-
-Status is published as JSON text on:
-
-```text
-/checkpoint_status
-```
-
-Inspect it with:
-
-```bash
-ros2 topic echo /checkpoint_status
-```
+Do not run Nav2 navigation while using `2D Goal Pose` for annotation, because
+the same `/goal_pose` topic is used by Nav2 to send a real navigation goal.
 
 ## SLAM Mapping
 
@@ -339,6 +342,14 @@ ros2 launch simbiosys_mapping getmap.launch.py simulation:=true
 
 ```bash
 ros2 launch simbiosys_mapping getmap.launch.py
+```
+
+Use the greenhouse test world:
+
+```bash
+ros2 launch simbiosys_mapping getmap.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 Real robot mapping:
@@ -478,6 +489,14 @@ Run simulation navigation:
 
 ```bash
 ros2 launch simbiosys_mapping navigation.launch.py simulation:=true
+```
+
+Run simulation navigation in the greenhouse world:
+
+```bash
+ros2 launch simbiosys_mapping navigation.launch.py \
+  simulation:=true \
+  world:=$(ros2 pkg prefix simbiosys_mapping)/share/simbiosys_mapping/worlds/greenhouse_8_beds.world
 ```
 
 The navigation launch always loads:

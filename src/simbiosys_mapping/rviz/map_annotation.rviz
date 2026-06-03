@@ -48,7 +48,6 @@ Visualization Manager:
       Single click: true
       Topic:
         Value: /clicked_point
-      Value: false
   Value: true
   Views:
     Current:

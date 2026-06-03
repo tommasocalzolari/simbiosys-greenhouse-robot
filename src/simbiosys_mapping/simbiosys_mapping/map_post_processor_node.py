@@ -377,8 +377,7 @@ class MapPostProcessorNode(Node):
         response.success = True
         response.message = (
             "Annotation started. In RViz: set home with 2D Pose Estimate, "
-            "set final with 2D Goal Pose, then set each bed checkpoint with "
-            "2D Goal Pose."
+            "set final with 2D Goal Pose, then click bed starts with Publish Point."
         )
         self.get_logger().info(response.message)
         return response
@@ -453,23 +452,15 @@ class MapPostProcessorNode(Node):
         self.get_logger().info("Saved home pose. Now set final pose with 2D Goal Pose.")
 
     def _on_goal_pose(self, msg: PoseStamped) -> None:
-        if self._annotation_stage == "final":
-            self._final_pose = copy.deepcopy(msg)
-            self._annotation_stage = "beds"
-            self._publish_annotation_markers()
-            self._save_annotations()
-            self.get_logger().info(
-                "Saved final pose. Now set each flower bed checkpoint with "
-                "2D Goal Pose so orientation is saved too."
-            )
+        if self._annotation_stage != "final":
             return
 
-        if self._annotation_stage != "beds":
-            return
-
-        self._append_bed_pose(msg)
+        self._final_pose = copy.deepcopy(msg)
+        self._annotation_stage = "beds"
+        self._publish_annotation_markers()
+        self._save_annotations()
         self.get_logger().info(
-            f"Saved flower bed {len(self._flower_beds)} checkpoint pose."
+            "Saved final pose. Now click flower bed start positions with Publish Point."
         )
 
     def _on_clicked_point(self, msg: PointStamped) -> None:
@@ -490,26 +481,7 @@ class MapPostProcessorNode(Node):
         )
         self._publish_annotation_markers()
         self._save_annotations()
-        self.get_logger().info(
-            f"Saved flower bed {bed_id} start position without orientation. "
-            "Use 2D Goal Pose for checkpoints with heading."
-        )
-
-    def _append_bed_pose(self, msg: PoseStamped) -> None:
-        bed_id = len(self._flower_beds) + 1
-        pose_dict = self._pose_to_dict(msg)
-        self._flower_beds.append(
-            {
-                "bed_id": bed_id,
-                "frame_id": pose_dict["frame_id"],
-                "start_pose": pose_dict,
-                "start_position": pose_dict["position"],
-                "orientation": pose_dict["orientation"],
-                "yaw": pose_dict["yaw"],
-            }
-        )
-        self._publish_annotation_markers()
-        self._save_annotations()
+        self.get_logger().info(f"Saved flower bed {bed_id} start position.")
 
     def _save_annotations(self) -> Path:
         map_yaml = Path(self._string_parameter("map_yaml")).expanduser()
@@ -625,34 +597,22 @@ class MapPostProcessorNode(Node):
         point.y = bed["start_position"]["y"]
         point.z = bed["start_position"]["z"]
 
-        pose_marker = Marker()
-        pose_marker.header.frame_id = frame_id
-        pose_marker.header.stamp = stamp
-        pose_marker.ns = "flower_bed_start_annotations"
-        pose_marker.id = marker_id
-        pose_marker.action = Marker.ADD
-        pose_marker.color.r = 0.1
-        pose_marker.color.g = 0.25
-        pose_marker.color.b = 1.0
-        pose_marker.color.a = 1.0
-
-        if "start_pose" in bed:
-            pose_marker.type = Marker.ARROW
-            pose_marker.pose.position = point
-            pose_marker.pose.orientation.x = bed["orientation"]["x"]
-            pose_marker.pose.orientation.y = bed["orientation"]["y"]
-            pose_marker.pose.orientation.z = bed["orientation"]["z"]
-            pose_marker.pose.orientation.w = bed["orientation"]["w"]
-            pose_marker.scale.x = 0.35
-            pose_marker.scale.y = 0.06
-            pose_marker.scale.z = 0.06
-        else:
-            pose_marker.type = Marker.SPHERE
-            pose_marker.pose.position = point
-            pose_marker.pose.orientation.w = 1.0
-            pose_marker.scale.x = 0.14
-            pose_marker.scale.y = 0.14
-            pose_marker.scale.z = 0.14
+        sphere = Marker()
+        sphere.header.frame_id = frame_id
+        sphere.header.stamp = stamp
+        sphere.ns = "flower_bed_start_annotations"
+        sphere.id = marker_id
+        sphere.type = Marker.SPHERE
+        sphere.action = Marker.ADD
+        sphere.pose.position = point
+        sphere.pose.orientation.w = 1.0
+        sphere.scale.x = 0.14
+        sphere.scale.y = 0.14
+        sphere.scale.z = 0.14
+        sphere.color.r = 0.1
+        sphere.color.g = 0.25
+        sphere.color.b = 1.0
+        sphere.color.a = 1.0
 
         text = self._text_marker(
             marker_id + 1,
@@ -664,7 +624,7 @@ class MapPostProcessorNode(Node):
             0.25,
             1.0,
         )
-        return [pose_marker, text]
+        return [sphere, text]
 
     def _text_marker(
         self,
