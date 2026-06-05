@@ -48,21 +48,13 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
         self.declare_parameter("depth_camera_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
-        self.declare_parameter("use_yolo", True)
         self.declare_parameter("model_path", default_model_path)
-        self.declare_parameter("min_contour_area", 500.0)
-        self.declare_parameter("max_contour_area", 50000.0)
-        self.declare_parameter("morph_kernel_size", 7)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("depth_roi_radius_px", 4)
         self.declare_parameter("focal_length_y_px", 615.0)
         self.declare_parameter("camera_height_mm", 80.0)
         self.declare_parameter("box_height_mm", 190.0)
         self.declare_parameter("camera_distance_mm", 450.0)
-        self.declare_parameter("magenta_hsv_lower", [165, 150, 70])
-        self.declare_parameter("magenta_hsv_upper", [180, 255, 180])
-        self.declare_parameter("light_hsv_lower", [0, 3, 175])
-        self.declare_parameter("light_hsv_upper", [180, 90, 255])
 
         self._image_topic = (
             self.get_parameter("image_topic").get_parameter_value().string_value
@@ -84,18 +76,8 @@ class FlowerDetectionNode(Node):
         output_topic = (
             self.get_parameter("output_topic").get_parameter_value().string_value
         )
-        self._use_yolo = self.get_parameter("use_yolo").get_parameter_value().bool_value
         self._model_path = (
             self.get_parameter("model_path").get_parameter_value().string_value
-        )
-        self._min_contour_area = (
-            self.get_parameter("min_contour_area").get_parameter_value().double_value
-        )
-        self._max_contour_area = (
-            self.get_parameter("max_contour_area").get_parameter_value().double_value
-        )
-        self._morph_kernel_size = (
-            self.get_parameter("morph_kernel_size").get_parameter_value().integer_value
         )
         self._depth_unit_scale = (
             self.get_parameter("depth_unit_scale").get_parameter_value().double_value
@@ -121,7 +103,7 @@ class FlowerDetectionNode(Node):
         self._bridge = CvBridge()
         self._latest_depth_m: np.ndarray | None = None
         self._principal_y_px: float | None = None
-        self._yolo_model = self._load_yolo_model() if self._use_yolo else None
+        self._yolo_model = self._load_yolo_model()
         self._tracked_flower_centers: list[TrackedFlowerCenter] = []
         self._publisher = self.create_publisher(FlowerData, output_topic, 10)
         self._bug_detected_publisher = self.create_publisher(
@@ -158,9 +140,8 @@ class FlowerDetectionNode(Node):
             f"Flower detection listening on color={self._subscribed_image_topic}, "
             f"depth={self._depth_topic}, publishing {output_topic}"
         )
-        detection_backend = "YOLOv8" if self._yolo_model is not None else "HSV"
         self.get_logger().info(
-            f"Flower detection backend={detection_backend}, model_path={self._model_path}"
+            f"Flower detection backend=YOLOv8, model_path={self._model_path}"
         )
         self.get_logger().info(
             f"Flower height geometry camera_height={self._camera_height_mm:.1f}mm, "
@@ -219,35 +200,30 @@ class FlowerDetectionNode(Node):
             model_path = Path(__file__).parent / model_path
 
         if not model_path.exists():
-            self.get_logger().warning(
-                f"YOLO model not found at {model_path}; falling back to HSV detection"
-            )
+            self.get_logger().warning(f"YOLO model not found at {model_path}")
             return None
 
         try:
             from ultralytics import YOLO
         except ImportError as exc:
-            self.get_logger().warning(
-                f"ultralytics is not installed ({exc}); falling back to HSV detection"
-            )
+            self.get_logger().warning(f"ultralytics is not installed ({exc})")
             return None
 
         try:
             return YOLO(str(model_path))
         except Exception as exc:  # noqa: BLE001 - keep node alive if model loading fails.
             self.get_logger().warning(
-                f"Could not load YOLO model from {model_path}: {exc}; "
-                "falling back to HSV detection"
+                f"Could not load YOLO model from {model_path}: {exc}"
             )
             return None
 
     def _detect_frame(self, frame: np.ndarray) -> tuple[list[FlowerDetection], bool]:
-        if self._use_yolo and self._yolo_model is not None:
-            return self._detect_with_yolo(frame)
-
-        return self._detect_flowers_hsv(frame), False
+        return self._detect_with_yolo(frame)
 
     def _detect_with_yolo(self, frame: np.ndarray) -> tuple[list[FlowerDetection], bool]:
+        if self._yolo_model is None:
+            return [], False
+
         results = self._yolo_model.predict(frame, conf=0.4, iou=0.5, verbose=False)
         if not results:
             return [], False
@@ -348,108 +324,6 @@ class FlowerDetectionNode(Node):
         except CvBridgeError as exc:
             self.get_logger().warning(f"Could not convert camera image: {exc}")
             return None
-
-    def _detect_flowers_hsv(self, frame: np.ndarray) -> list[FlowerDetection]:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-        detections = []
-        for color_label, mask in self._build_color_masks(hsv):
-            detections.extend(self._find_detections_for_mask(mask, color_label))
-
-        detections = sorted(
-            detections,
-            key=lambda detection: detection.contour_area,
-            reverse=True,
-        )
-        self._update_tracked_flower_centers(detections)
-        return detections
-
-    def _build_color_masks(
-        self,
-        hsv: np.ndarray,
-    ) -> list[tuple[str, np.ndarray]]:
-        masks = []
-        for color_label in ("magenta", "light"):
-            lower, upper = self._get_hsv_bounds(color_label)
-            mask = cv2.inRange(hsv, lower, upper)
-            masks.append((color_label, self._clean_mask(mask)))
-
-        return masks
-
-    def _get_hsv_bounds(self, color_label: str) -> tuple[np.ndarray, np.ndarray]:
-        lower = self._get_hsv_parameter(f"{color_label}_hsv_lower")
-        upper = self._get_hsv_parameter(f"{color_label}_hsv_upper")
-        return np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8)
-
-    def _get_hsv_parameter(self, name: str) -> list[int]:
-        values = self.get_parameter(name).get_parameter_value().integer_array_value
-        if len(values) != 3:
-            self.get_logger().warning(
-                f"{name} must contain exactly 3 integers; using [0, 0, 0]"
-            )
-            return [0, 0, 0]
-
-        return [
-            max(0, min(180, int(values[0]))),
-            max(0, min(255, int(values[1]))),
-            max(0, min(255, int(values[2]))),
-        ]
-
-    def _clean_mask(self, mask: np.ndarray) -> np.ndarray:
-        kernel_size = max(1, self._morph_kernel_size)
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-    def _find_detections_for_mask(
-        self,
-        mask: np.ndarray,
-        color_label: str,
-    ) -> list[FlowerDetection]:
-        contours, _ = cv2.findContours(
-            mask,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE,
-        )
-        detections = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < self._min_contour_area or area > self._max_contour_area:
-                continue
-            detection = self._detection_from_contour(
-                contour,
-                color_label,
-                mask.shape[0],
-                mask.shape[1],
-            )
-            if detection is not None:
-                detections.append(detection)
-
-        return detections
-
-    def _detection_from_contour(
-        self,
-        contour: np.ndarray,
-        color_label: str,
-        image_height: int,
-        image_width: int,
-    ) -> FlowerDetection | None:
-        x, y, width, height = cv2.boundingRect(contour)
-
-        aspect_ratio = width / float(height)
-        if aspect_ratio < 0.4 or aspect_ratio > 2.5:
-            return None
-
-        points = contour.reshape(-1, 2)
-        top_y = int(points[:, 1].min())
-        top_candidates = points[points[:, 1] == top_y]
-        top_x = int(np.median(top_candidates[:, 0]))
-        return FlowerDetection(
-            bbox=(x, y, width, height),
-            top_pixel=(top_x, top_y),
-            color_label=color_label,
-            contour_area=float(cv2.contourArea(contour)),
-        )
 
     def _depth_image_to_meters(
         self,
