@@ -291,6 +291,9 @@ The intended RViz annotation order is:
 1. `2D Pose Estimate` for home pose.
 2. `2D Goal Pose` for each checkpoint in visit order.
 
+Each checkpoint stores position, orientation, and yaw. The annotation RViz view
+shows a pin, heading arrow, and number for every saved checkpoint.
+
 Use this launch when the map is already good and should not be changed.
 
 ### `launch/map_post_processing.launch.py`

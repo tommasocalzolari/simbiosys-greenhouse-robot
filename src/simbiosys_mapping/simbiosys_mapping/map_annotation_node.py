@@ -73,6 +73,7 @@ class MapAnnotationNode(Node):
 
         self.create_service(Trigger, "~/reload_map", self._on_reload_map)
         self.create_service(Trigger, "~/start_annotation", self._on_start_annotation)
+        self.create_service(Trigger, "~/save_annotations", self._on_save_annotations)
         self.create_service(Trigger, "~/finish_annotation", self._on_finish_annotation)
         self.create_service(Trigger, "~/reset_annotation", self._on_reset_annotation)
         self.create_service(
@@ -128,6 +129,19 @@ class MapAnnotationNode(Node):
         _request: Trigger.Request,
         response: Trigger.Response,
     ) -> Trigger.Response:
+        return self._save_annotations_response(response)
+
+    def _on_save_annotations(
+        self,
+        _request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        return self._save_annotations_response(response)
+
+    def _save_annotations_response(
+        self,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
         if self._home_pose is None:
             response.success = False
             response.message = "Set the home pose before finishing."
@@ -138,9 +152,11 @@ class MapAnnotationNode(Node):
             return response
 
         annotations_path = self._save_annotations()
-        self._annotation_stage = "idle"
         response.success = True
-        response.message = f"Saved annotations to {annotations_path}"
+        response.message = (
+            f"Saved annotations to {annotations_path}. "
+            "Annotation remains active, so you can keep adding checkpoints."
+        )
         self.get_logger().info(response.message)
         return response
 
@@ -213,7 +229,10 @@ class MapAnnotationNode(Node):
         self._checkpoints.append(checkpoint)
         self._publish_annotation_markers()
         self._save_annotations()
-        self.get_logger().info(f"Saved {checkpoint['label']}.")
+        self.get_logger().info(
+            f"Saved {checkpoint['label']} with orientation. "
+            "Select 2D Goal Pose again if RViz switches tools."
+        )
 
     def _load_and_publish_map(self) -> None:
         map_yaml = Path(self._string_parameter("map_yaml")).expanduser()
@@ -334,14 +353,21 @@ class MapAnnotationNode(Node):
 
         marker_id = 0
         if self._home_pose is not None:
-            markers.markers.extend(
-                self._pose_markers(marker_id, self._home_pose, "home", 0.0, 0.7, 0.1)
+            pose_markers = self._pose_markers(
+                marker_id,
+                self._home_pose,
+                "home",
+                0.0,
+                0.7,
+                0.1,
             )
-            marker_id += 2
+            markers.markers.extend(pose_markers)
+            marker_id += len(pose_markers)
 
         for checkpoint in self._checkpoints:
-            markers.markers.extend(self._checkpoint_markers(marker_id, checkpoint))
-            marker_id += 2
+            checkpoint_markers = self._checkpoint_markers(marker_id, checkpoint)
+            markers.markers.extend(checkpoint_markers)
+            marker_id += len(checkpoint_markers)
 
         self._marker_pub.publish(markers)
 
@@ -373,8 +399,26 @@ class MapAnnotationNode(Node):
         arrow.color.b = blue
         arrow.color.a = 1.0
 
+        pin = Marker()
+        pin.header.frame_id = frame_id
+        pin.header.stamp = stamp
+        pin.ns = "map_pin_annotations"
+        pin.id = marker_id + 1
+        pin.type = Marker.SPHERE
+        pin.action = Marker.ADD
+        pin.pose.position = copy.deepcopy(pose_msg.pose.position)
+        pin.pose.position.z += 0.03
+        pin.pose.orientation.w = 1.0
+        pin.scale.x = 0.12
+        pin.scale.y = 0.12
+        pin.scale.z = 0.12
+        pin.color.r = red
+        pin.color.g = green
+        pin.color.b = blue
+        pin.color.a = 1.0
+
         text = self._text_marker(
-            marker_id + 1,
+            marker_id + 2,
             frame_id,
             stamp,
             label,
@@ -383,7 +427,7 @@ class MapAnnotationNode(Node):
             green,
             blue,
         )
-        return [arrow, text]
+        return [arrow, pin, text]
 
     def _checkpoint_markers(
         self,
