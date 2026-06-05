@@ -30,6 +30,7 @@ set(msg_files
   "msg/BedSideAlignment.msg"
   "msg/BinWallAlignment.msg"
   "msg/BehaviorType.msg"
+  "msg/CurrentMission.msg"
   "msg/DetectedTag.msg"
   "msg/FlowerData.msg"
   "msg/FlowerTarget.msg"
@@ -58,8 +59,10 @@ set(srv_files
 )
 
 set(action_files
+  "action/AnalyzePlantScan.action"
   "action/ExecuteBinStrafe.action"
   "action/ExecuteBedSideScan.action"
+  "action/ExecuteScanPosition.action"
   "action/ExecuteArmMotion.action"
   "action/ExecuteBehavior.action"
   "action/MoveToTarget.action"

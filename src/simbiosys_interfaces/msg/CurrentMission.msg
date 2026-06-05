@@ -1,0 +1,12 @@
+string mission_id
+string phase
+string active_bed_id
+string active_side
+string active_scan_position_id
+uint32 queue_index
+uint32 queue_total
+geometry_msgs/PoseStamped current_pose
+geometry_msgs/PoseStamped target_pose
+simbiosys_interfaces/PlantHealth latest_plant_health
+bool error
+string message

@@ -150,6 +150,18 @@ def generate_launch_description():
             ),
             Node(
                 package="simbiosys_behavior",
+                executable="scan_pose_controller_node",
+                name="scan_pose_controller_node",
+                output="screen",
+                parameters=[
+                    {
+                        "cmd_vel_topic": cmd_vel_topic,
+                        "enable_motion": bed_side_enable_motion,
+                    }
+                ],
+            ),
+            Node(
+                package="simbiosys_behavior",
                 executable="operator_led_node",
                 name="operator_led_node",
                 output="screen",

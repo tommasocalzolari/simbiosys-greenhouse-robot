@@ -1,15 +1,20 @@
 from dataclasses import dataclass
 from pathlib import Path
+import threading
+import time
 
 import rclpy
 from cv_bridge import CvBridge, CvBridgeError
+from geometry_msgs.msg import Point
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool
 
 import cv2
 import numpy as np
-from simbiosys_interfaces.msg import FlowerData
+from simbiosys_interfaces.action import AnalyzePlantScan
+from simbiosys_interfaces.msg import FlowerData, PlantHealth
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,11 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
         self.declare_parameter("depth_camera_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
+        self.declare_parameter("plant_health_topic", "simbiosys/plant_health")
+        self.declare_parameter(
+            "analyze_plant_scan_action_name",
+            "simbiosys/analyze_plant_scan",
+        )
         self.declare_parameter("model_path", default_model_path)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("depth_roi_radius_px", 4)
@@ -66,6 +76,9 @@ class FlowerDetectionNode(Node):
         )
         output_topic = (
             self.get_parameter("output_topic").get_parameter_value().string_value
+        )
+        plant_health_topic = (
+            self.get_parameter("plant_health_topic").get_parameter_value().string_value
         )
         self._model_path = (
             self.get_parameter("model_path").get_parameter_value().string_value
@@ -95,7 +108,18 @@ class FlowerDetectionNode(Node):
         self._latest_depth_m: np.ndarray | None = None
         self._principal_y_px: float | None = None
         self._yolo_model = self._load_yolo_model()
+        self._analysis_condition = threading.Condition()
+        self._analysis_seq = 0
+        self._active_scan_context = None
+        self._latest_flower_data = FlowerData()
+        self._latest_plant_health = PlantHealth()
+        self._latest_analysis_message = ""
         self._publisher = self.create_publisher(FlowerData, output_topic, 10)
+        self._plant_health_publisher = self.create_publisher(
+            PlantHealth,
+            plant_health_topic,
+            10,
+        )
         self._bug_detected_publisher = self.create_publisher(
             Bool,
             "/simbiosys/bug_detected",
@@ -124,6 +148,16 @@ class FlowerDetectionNode(Node):
             self._depth_camera_info_topic,
             self._on_camera_info,
             10,
+        )
+        self._analyze_action_server = ActionServer(
+            self,
+            AnalyzePlantScan,
+            self.get_parameter("analyze_plant_scan_action_name")
+            .get_parameter_value()
+            .string_value,
+            execute_callback=self._execute_analyze_plant_scan,
+            goal_callback=self._analyze_goal_callback,
+            cancel_callback=self._analyze_cancel_callback,
         )
 
         self.get_logger().info(
@@ -166,6 +200,7 @@ class FlowerDetectionNode(Node):
         if frame is None:
             return
 
+        scan_context = self._scan_context_snapshot()
         detections, bug_detected = self._detect_frame(frame)
         if bug_detected:
             self._publish_bug_detected()
@@ -175,9 +210,137 @@ class FlowerDetectionNode(Node):
             for detection in detections
         ]
 
-        self._publisher.publish(self._build_message(detections, height_by_detection))
+        flower_data = self._build_message(detections, height_by_detection)
+        plant_health = self._plant_health_from_flower_data(
+            flower_data,
+            bug_detected,
+            scan_context,
+        )
+
+        self._publisher.publish(flower_data)
+        self._plant_health_publisher.publish(plant_health)
+        self._store_latest_analysis(flower_data, plant_health)
 
         self._publish_debug_image(frame, detections, height_by_detection, image_msg)
+
+    def _analyze_goal_callback(self, goal_request: AnalyzePlantScan.Goal) -> GoalResponse:
+        if not goal_request.scan_position.scan_position_id.strip():
+            self.get_logger().warning("Rejecting plant scan analysis without scan position id")
+            return GoalResponse.REJECT
+        with self._analysis_condition:
+            if self._active_scan_context is not None:
+                self.get_logger().warning("Rejecting plant scan analysis while another request is active")
+                return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _analyze_cancel_callback(self, _goal_handle) -> CancelResponse:
+        with self._analysis_condition:
+            self._active_scan_context = None
+            self._analysis_condition.notify_all()
+        return CancelResponse.ACCEPT
+
+    def _execute_analyze_plant_scan(self, goal_handle):
+        goal = goal_handle.request
+        result = AnalyzePlantScan.Result()
+
+        if goal.dry_run:
+            flower_data = FlowerData()
+            flower_data.detected = False
+            flower_data.dominant_label = "dry_run"
+            flower_data.dominant_count = 0
+            flower_data.dominant_confidence = 0.0
+            flower_data.heights_cm = []
+            flower_data.message = "DRY_RUN: plant scan analysis accepted"
+            plant_health = self._plant_health_from_flower_data(
+                flower_data,
+                False,
+                goal,
+            )
+            self._publisher.publish(flower_data)
+            self._plant_health_publisher.publish(plant_health)
+            result.success = True
+            result.flower_data = flower_data
+            result.plant_health = plant_health
+            result.message = flower_data.message
+            goal_handle.succeed()
+            return result
+
+        timeout_sec = float(goal.timeout_sec) if goal.timeout_sec > 0.0 else 5.0
+        with self._analysis_condition:
+            start_seq = self._analysis_seq
+            self._active_scan_context = goal
+
+        self._publish_analyze_feedback(
+            goal_handle,
+            "waiting_for_image",
+            0.1,
+            f"Waiting for fresh image for {goal.scan_position.scan_position_id}",
+        )
+
+        deadline = time.monotonic() + timeout_sec
+        with self._analysis_condition:
+            while rclpy.ok() and self._analysis_seq <= start_seq:
+                if goal_handle.is_cancel_requested:
+                    self._active_scan_context = None
+                    goal_handle.canceled()
+                    result.success = False
+                    result.message = "plant scan analysis cancelled"
+                    return result
+                remaining_sec = deadline - time.monotonic()
+                if remaining_sec <= 0.0:
+                    self._active_scan_context = None
+                    result.success = False
+                    result.message = "TIMEOUT: no fresh image received for plant scan analysis"
+                    goal_handle.abort()
+                    return result
+                self._analysis_condition.wait(timeout=min(0.1, remaining_sec))
+
+            self._active_scan_context = None
+            flower_data = self._latest_flower_data
+            plant_health = self._latest_plant_health
+            message = self._latest_analysis_message
+
+        self._publish_analyze_feedback(
+            goal_handle,
+            "analyzed",
+            1.0,
+            message or flower_data.message,
+        )
+        result.success = True
+        result.flower_data = flower_data
+        result.plant_health = plant_health
+        result.message = message or flower_data.message
+        goal_handle.succeed()
+        return result
+
+    def _publish_analyze_feedback(
+        self,
+        goal_handle,
+        phase: str,
+        progress: float,
+        message: str,
+    ) -> None:
+        feedback = AnalyzePlantScan.Feedback()
+        feedback.phase = phase
+        feedback.progress = max(0.0, min(1.0, float(progress)))
+        feedback.message = message
+        goal_handle.publish_feedback(feedback)
+
+    def _scan_context_snapshot(self):
+        with self._analysis_condition:
+            return self._active_scan_context
+
+    def _store_latest_analysis(
+        self,
+        flower_data: FlowerData,
+        plant_health: PlantHealth,
+    ) -> None:
+        with self._analysis_condition:
+            self._latest_flower_data = flower_data
+            self._latest_plant_health = plant_health
+            self._latest_analysis_message = plant_health.notes or flower_data.message
+            self._analysis_seq += 1
+            self._analysis_condition.notify_all()
 
     def _load_yolo_model(self):
         model_path = Path(self._model_path).expanduser()
@@ -447,6 +610,53 @@ class FlowerDetectionNode(Node):
             f"heights_cm={[round(height_cm, 1) for height_cm in ordered_heights]}"
         )
         return msg
+
+    def _plant_health_from_flower_data(
+        self,
+        flower_data: FlowerData,
+        bug_detected: bool,
+        scan_context,
+    ) -> PlantHealth:
+        msg = PlantHealth()
+        scan_position = getattr(scan_context, "scan_position", None)
+        side = str(getattr(scan_context, "side", "") or "").strip().lower()
+        if scan_position is not None:
+            msg.bed_id = scan_position.bed_id
+            msg.flower_id = self._flower_id_for_scan(scan_position, side)
+            msg.position = Point(
+                x=float(scan_position.base_pose.x),
+                y=float(scan_position.base_pose.y),
+                z=0.0,
+            )
+        msg.flower_detected = bool(flower_data.detected)
+        msg.bug_detected = bool(bug_detected)
+        msg.color = flower_data.dominant_label
+        msg.confidence = float(flower_data.dominant_confidence)
+        msg.height_cm = self._representative_height_cm(flower_data.heights_cm)
+        msg.position.z = float(msg.height_cm)
+        msg.growth_stage = "unknown"
+        msg.ready_for_harvest = False
+        msg.health = "unknown" if flower_data.detected else "no_detection"
+        msg.last_scan_time = self.get_clock().now().to_msg()
+        msg.notes = (
+            f"side:{side or 'unknown'}; count:{flower_data.dominant_count}; "
+            f"{flower_data.message}"
+        )
+        return msg
+
+    def _flower_id_for_scan(self, scan_position, side: str) -> str:
+        parts = [
+            scan_position.bed_id.strip(),
+            side,
+            scan_position.scan_position_id.strip(),
+        ]
+        return ":".join(part for part in parts if part)
+
+    def _representative_height_cm(self, heights_cm) -> float:
+        valid_heights = [float(height) for height in heights_cm if float(height) > 0.0]
+        if not valid_heights:
+            return 0.0
+        return sum(valid_heights) / len(valid_heights)
 
     def _average_confidence(self, detections: list[FlowerDetection]) -> float:
         if not detections:

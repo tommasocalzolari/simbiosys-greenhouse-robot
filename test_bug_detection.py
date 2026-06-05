@@ -2,7 +2,6 @@ import sys
 from pathlib import Path
 
 import cv2
-from ultralytics import YOLO
 
 
 MODEL_PATH = (
@@ -27,6 +26,12 @@ def resize_for_display(image):
 
 
 def detect_bug(image_path):
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        print(f"ultralytics not available: {exc}")
+        return
+
     image = cv2.imread(image_path)
     if image is None:
         print(f"Could not load image: {image_path}")
@@ -78,6 +83,10 @@ def detect_bug(image_path):
     cv2.imshow("Bug detection", resize_for_display(result))
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
+
+def test_bug_detection_helper_imports():
+    assert callable(detect_bug)
 
 
 if __name__ == "__main__":

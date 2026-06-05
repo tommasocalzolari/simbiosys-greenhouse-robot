@@ -22,7 +22,7 @@ simbiosys_ui/config/rosTopics.json
 | Set task mode | `simbiosys/set_robot_mode` | `simbiosys_interfaces/srv/SetRobotMode` | `simbiosys_behavior/mission_manager_node.py` | yes | Dashboard maps `harvest` to `HARVESTING` and `scanning` to `SCANNING`. |
 | Behavior command | `simbiosys/execute_behavior` | `simbiosys_interfaces/action/ExecuteBehavior` | `simbiosys_behavior/mission_manager_node.py` | yes | Dashboard sends `NAVIGATE`; Take Control sends `TELEOP`; Release/STOP sends `IDLE` when available. |
 | Named arm pose | `simbiosys/send_named_arm_pose` | `simbiosys_interfaces/srv/SendNamedArmPose` | `simbiosys_arm/named_joint_pose_node.py` | yes | Arm Operations uses existing names: `home`, `camera_forward`, `camera_down`, `inspect`, `stow`. |
-| Typed plant record | `simbiosys/plant_health` | `simbiosys_interfaces/msg/PlantHealth` | `simbiosys_perception/plant_analysis_node.py` | yes | UI displays only selected useful fields: ID, color, growth stage, ready flag, scan age. |
+| Typed plant record | `simbiosys/plant_health` | `simbiosys_interfaces/msg/PlantHealth` | `simbiosys_perception/flower_detection_node.py` | yes | UI displays only selected useful fields: ID, color, growth stage, ready flag, scan age. |
 | Legacy plant record | `/plant_health` | `std_msgs/msg/String` JSON | legacy/UI integration | yes | Must include a real `flower_id`; otherwise ignored. |
 | Plant report | `/plant_health_report` | `std_msgs/msg/String` JSON/text | future/report backend | yes | Optional summary source. |
 | Bed observation | `simbiosys/bed_observation` | `simbiosys_interfaces/msg/BedObservation` | `simbiosys_perception/apriltag_detection_node.py` | limited | Gives real bed IDs/visibility only; no CO2/humidity/bugs fields exist. |

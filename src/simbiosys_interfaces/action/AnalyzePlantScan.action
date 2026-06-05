@@ -1,0 +1,15 @@
+simbiosys_interfaces/ScanPosition scan_position
+string side
+string mission_id
+string request_id
+float32 timeout_sec
+bool dry_run
+---
+bool success
+simbiosys_interfaces/FlowerData flower_data
+simbiosys_interfaces/PlantHealth plant_health
+string message
+---
+string phase
+float32 progress
+string message

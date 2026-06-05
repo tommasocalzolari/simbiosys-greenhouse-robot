@@ -1,3 +1,4 @@
+import json
 import math
 import threading
 import time
@@ -20,11 +21,18 @@ from rclpy.parameter import Parameter
 from sensor_msgs.msg import LaserScan
 
 from simbiosys_behavior.state_machine import MissionStateMachine
-from simbiosys_interfaces.action import ExecuteBedSideScan, ExecuteBehavior
+from simbiosys_interfaces.action import (
+    AnalyzePlantScan,
+    ExecuteBedSideScan,
+    ExecuteBehavior,
+    ExecuteScanPosition,
+)
 from simbiosys_interfaces.msg import (
     BehaviorType,
+    CurrentMission,
     HarvestStatus,
     NavigationStatus,
+    PlantHealth,
     ScanProgress,
     ScanPosition,
     TaskStatus,
@@ -48,6 +56,12 @@ class TopicHealth:
     map_seen: bool = False
     amcl_seen: bool = False
     plan_seen: bool = False
+
+
+@dataclass
+class QueuedScanPosition:
+    scan_position: ScanPosition
+    side: str
 
 
 class FailureCode:
@@ -76,8 +90,12 @@ class MissionManagerNode(Node):
         self._topic_lock = threading.Lock()
         self._active_nav_goal_handle = None
         self._active_bed_side_goal_handle = None
+        self._active_scan_position_goal_handle = None
+        self._active_plant_analysis_goal_handle = None
         self._latest_pose = PoseStamped()
         self._latest_path = Path()
+        self._latest_plant_health = PlantHealth()
+        self._latest_plant_health_time = 0.0
 
         self.declare_parameter("harvest_enabled", False)
         self.declare_parameter("scan_topic", "/scan")
@@ -91,11 +109,35 @@ class MissionManagerNode(Node):
             "bed_side_scan_action_name",
             "simbiosys/execute_bed_side_scan",
         )
+        self.declare_parameter(
+            "scan_position_action_name",
+            "simbiosys/execute_scan_position",
+        )
+        self.declare_parameter(
+            "plant_analysis_action_name",
+            "simbiosys/analyze_plant_scan",
+        )
         self.declare_parameter("nav2_server_timeout_sec", 2.0)
         self.declare_parameter("bed_side_scan_server_timeout_sec", 0.5)
+        self.declare_parameter("scan_position_server_timeout_sec", 0.5)
+        self.declare_parameter("plant_analysis_server_timeout_sec", 0.5)
         self.declare_parameter("require_localization_for_navigation", True)
         self.declare_parameter("bed_side_scan_dry_run", True)
+        self.declare_parameter("scan_position_dry_run", True)
+        self.declare_parameter("plant_analysis_dry_run", False)
         self.declare_parameter("min_flowers_per_bed_side", 1)
+        self.declare_parameter("home_pose", [0.0, 0.0, 0.0])
+        self.declare_parameter("publish_initial_pose_on_mission_start", True)
+        self.declare_parameter("initial_pose_topic", "/initialpose")
+        self.declare_parameter("initial_pose_covariance_xy", 0.25)
+        self.declare_parameter("initial_pose_covariance_yaw", 0.0685)
+        self.declare_parameter("scan_positions", [""])
+        self.declare_parameter("mission_localization_timeout_sec", 10.0)
+        self.declare_parameter("scan_position_target_distance_m", 0.35)
+        self.declare_parameter("scan_position_hold_duration_sec", 1.0)
+        self.declare_parameter("plant_health_topic", "simbiosys/plant_health")
+        self.declare_parameter("plant_analysis_timeout_sec", 5.0)
+        self.declare_parameter("return_home_when_queue_empty", True)
 
         self._harvest_enabled = bool(self.get_parameter("harvest_enabled").value)
 
@@ -114,9 +156,19 @@ class MissionManagerNode(Node):
             "simbiosys/scan_progress",
             10,
         )
+        self._current_mission_publisher = self.create_publisher(
+            CurrentMission,
+            "simbiosys/current_mission",
+            10,
+        )
         self._harvest_status_publisher = self.create_publisher(
             HarvestStatus,
             "simbiosys/harvest_status",
+            10,
+        )
+        self._initial_pose_publisher = self.create_publisher(
+            PoseWithCovarianceStamped,
+            self._string_parameter("initial_pose_topic"),
             10,
         )
         self._cmd_vel_publisher = self.create_publisher(
@@ -158,6 +210,18 @@ class MissionManagerNode(Node):
             self,
             ExecuteBedSideScan,
             self._string_parameter("bed_side_scan_action_name"),
+            callback_group=self._callback_group,
+        )
+        self._scan_position_client = ActionClient(
+            self,
+            ExecuteScanPosition,
+            self._string_parameter("scan_position_action_name"),
+            callback_group=self._callback_group,
+        )
+        self._plant_analysis_client = ActionClient(
+            self,
+            AnalyzePlantScan,
+            self._string_parameter("plant_analysis_action_name"),
             callback_group=self._callback_group,
         )
 
@@ -208,6 +272,12 @@ class MissionManagerNode(Node):
             self._on_nav_plan,
             10,
         )
+        self.create_subscription(
+            PlantHealth,
+            self._string_parameter("plant_health_topic"),
+            self._on_plant_health,
+            10,
+        )
 
     def _string_parameter(self, name: str) -> str:
         return self.get_parameter(name).get_parameter_value().string_value
@@ -220,6 +290,25 @@ class MissionManagerNode(Node):
 
     def _int_parameter(self, name: str) -> int:
         return self.get_parameter(name).get_parameter_value().integer_value
+
+    def _parameter_value(self, name: str):
+        return self.get_parameter(name).value
+
+    def _float_array_parameter(self, name: str) -> list[float]:
+        value = self._parameter_value(name)
+        if isinstance(value, (list, tuple)):
+            return [float(item) for item in value]
+        if isinstance(value, str):
+            return [float(item.strip()) for item in value.split(",") if item.strip()]
+        return []
+
+    def _string_array_parameter(self, name: str) -> list[str]:
+        value = self._parameter_value(name)
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value]
+        if isinstance(value, str) and value.strip():
+            return [value]
+        return []
 
     def _mark_seen(self, key: str) -> None:
         with self._topic_lock:
@@ -251,6 +340,10 @@ class MissionManagerNode(Node):
     def _on_nav_plan(self, msg: Path) -> None:
         self._mark_seen("plan")
         self._latest_path = msg
+
+    def _on_plant_health(self, msg: PlantHealth) -> None:
+        self._latest_plant_health = msg
+        self._latest_plant_health_time = time.monotonic()
 
     def _health_snapshot(self) -> TopicHealth:
         with self._topic_lock:
@@ -434,6 +527,20 @@ class MissionManagerNode(Node):
             self._publish_navigation_status("failed", message, error=True)
             return False, message
 
+        return self._navigate_to_pose(
+            goal_handle,
+            target_pose,
+            "NAVIGATE",
+            set_idle_on_success=True,
+        )
+
+    def _navigate_to_pose(
+        self,
+        goal_handle,
+        target_pose,
+        label: str,
+        set_idle_on_success: bool = False,
+    ) -> tuple[bool, str]:
         health = self._health_snapshot()
         required = ["odom", "map"]
         if self._bool_parameter("require_localization_for_navigation"):
@@ -514,10 +621,11 @@ class MissionManagerNode(Node):
 
         status = int(result.status)
         if status == 4:  # action_msgs/GoalStatus.STATUS_SUCCEEDED
-            message = "NAVIGATE completed"
+            message = f"{label} completed"
             self._publish_feedback(goal_handle, message, 1.0)
             self._publish_navigation_status("arrived", message, goal.pose)
-            self._set_mode_for_behavior(BehaviorType.IDLE)
+            if set_idle_on_success:
+                self._set_mode_for_behavior(BehaviorType.IDLE)
             return True, message
 
         message = f"{FailureCode.EXECUTION_FAILED}: Nav2 finished with status {status}"
@@ -529,30 +637,477 @@ class MissionManagerNode(Node):
         if not success:
             return False, message
         target_id = goal_handle.request.target_id.strip()
-        if not target_id:
+        mission_id = f"scan-{int(time.time())}"
+        queue = self._scan_queue_for_target(target_id)
+        if not queue:
             message = (
                 f"{FailureCode.PRECONDITION_FAILED}: "
-                "INSPECT_BED requires target_id=<bed_id>:<side>, for example bed_1:a"
+                "INSPECT_BED found no configured scan positions"
             )
-            self._publish_scan_progress(message, error=True)
-            return False, message
-        parsed_target = self._parse_bed_side_target(target_id)
-        if parsed_target is None:
-            message = (
-                f"{FailureCode.PRECONDITION_FAILED}: "
-                "INSPECT_BED debug scanning expects target_id=<bed_id>:<side> "
-                "where side is 'a' or 'b'"
-            )
-            self._publish_scan_progress(message, active_bed_id=target_id, error=True)
+            self._publish_current_mission(mission_id, "failed", message, error=True)
             return False, message
 
-        bed_id, side = parsed_target
-        self._publish_feedback(
-            goal_handle,
-            f"Preparing bed-side scan for {bed_id}:{side}",
-            0.15,
+        self._publish_initial_pose_for_home()
+        self._publish_current_mission(
+            mission_id,
+            "localizing",
+            "Published home initial pose; waiting for localization inputs",
+            queue_index=0,
+            queue_total=len(queue),
         )
-        return self._execute_bed_side_scan(goal_handle, bed_id, side)
+        localization_ok, localization_message = self._wait_for_mission_localization(
+            goal_handle,
+            mission_id,
+            len(queue),
+        )
+        if not localization_ok:
+            return False, localization_message
+
+        skipped = 0
+        for index, queued_position in enumerate(queue):
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+
+            scan_position = queued_position.scan_position
+            target_pose = self._pose_from_scan_position(scan_position)
+            self._publish_current_mission(
+                mission_id,
+                "navigating",
+                f"Navigating to {scan_position.scan_position_id}",
+                queued_position,
+                index,
+                len(queue),
+                target_pose,
+            )
+            nav_success, nav_message = self._navigate_to_pose(
+                goal_handle,
+                target_pose.pose,
+                f"Navigate to {scan_position.scan_position_id}",
+                set_idle_on_success=False,
+            )
+            if not nav_success:
+                skipped += 1
+                self._publish_current_mission(
+                    mission_id,
+                    "skipped",
+                    nav_message,
+                    queued_position,
+                    index,
+                    len(queue),
+                    target_pose,
+                    error=True,
+                )
+                continue
+
+            self._publish_current_mission(
+                mission_id,
+                "aligning",
+                f"Aligning at {scan_position.scan_position_id}",
+                queued_position,
+                index,
+                len(queue),
+                target_pose,
+            )
+            scan_success, scan_message = self._execute_scan_position(
+                goal_handle,
+                queued_position,
+            )
+            if not scan_success:
+                skipped += 1
+                self._publish_current_mission(
+                    mission_id,
+                    "skipped",
+                    scan_message,
+                    queued_position,
+                    index,
+                    len(queue),
+                    target_pose,
+                    error=True,
+                )
+                continue
+
+            self._publish_current_mission(
+                mission_id,
+                "scanning",
+                f"Requesting plant analysis at {scan_position.scan_position_id}",
+                queued_position,
+                index,
+                len(queue),
+                target_pose,
+            )
+            plant_ok, plant_message = self._execute_plant_analysis(
+                goal_handle,
+                mission_id,
+                queued_position,
+            )
+            if not plant_ok:
+                skipped += 1
+                self._publish_current_mission(
+                    mission_id,
+                    "skipped",
+                    plant_message,
+                    queued_position,
+                    index,
+                    len(queue),
+                    target_pose,
+                    error=True,
+                )
+                continue
+
+            self._publish_current_mission(
+                mission_id,
+                "completed_scan_position",
+                f"Completed {scan_position.scan_position_id}",
+                queued_position,
+                index,
+                len(queue),
+                target_pose,
+            )
+            self._publish_scan_progress(
+                f"Completed {scan_position.scan_position_id}",
+                active_bed_id=scan_position.bed_id,
+                active_scan_position_id=scan_position.scan_position_id,
+                detection_status="plant_analysis_received",
+                latest_plant_health=self._latest_plant_health,
+            )
+
+        if self._bool_parameter("return_home_when_queue_empty"):
+            home_pose = self._home_pose_stamped()
+            self._publish_current_mission(
+                mission_id,
+                "returning_home",
+                "Returning home",
+                queue_index=len(queue),
+                queue_total=len(queue),
+                target_pose=home_pose,
+            )
+            home_success, home_message = self._navigate_to_pose(
+                goal_handle,
+                home_pose.pose,
+                "Return home",
+                set_idle_on_success=False,
+            )
+            if not home_success:
+                self._publish_current_mission(
+                    mission_id,
+                    "failed",
+                    home_message,
+                    queue_index=len(queue),
+                    queue_total=len(queue),
+                    target_pose=home_pose,
+                    error=True,
+                )
+                return False, home_message
+
+        message = (
+            f"INSPECT_BED queued mission complete; "
+            f"completed={len(queue) - skipped}, skipped={skipped}"
+        )
+        self._publish_current_mission(
+            mission_id,
+            "complete",
+            message,
+            queue_index=len(queue),
+            queue_total=len(queue),
+        )
+        self._set_mode_for_behavior(BehaviorType.IDLE)
+        return True, message
+
+    def _wait_for_mission_localization(
+        self,
+        goal_handle,
+        mission_id: str,
+        queue_total: int,
+    ) -> tuple[bool, str]:
+        deadline = time.monotonic() + self._double_parameter(
+            "mission_localization_timeout_sec"
+        )
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            health = self._health_snapshot()
+            missing = self._missing_topics(health, ["odom", "map", "amcl"])
+            if not missing:
+                message = "Localization ready"
+                self._publish_feedback(goal_handle, message, 0.1)
+                self._publish_current_mission(
+                    mission_id,
+                    "localized",
+                    message,
+                    queue_index=0,
+                    queue_total=queue_total,
+                )
+                return True, message
+            message = "Mission localization waiting for " + ", ".join(missing)
+            self._publish_feedback(goal_handle, message, 0.05)
+            self._publish_current_mission(
+                mission_id,
+                "localizing",
+                message,
+                queue_index=0,
+                queue_total=queue_total,
+            )
+            if time.monotonic() >= deadline:
+                message = f"{FailureCode.PRECONDITION_FAILED}: {message}"
+                self._publish_current_mission(
+                    mission_id,
+                    "failed",
+                    message,
+                    queue_index=0,
+                    queue_total=queue_total,
+                    error=True,
+                )
+                return False, message
+            time.sleep(0.1)
+
+    def _execute_scan_position(
+        self,
+        goal_handle,
+        queued_position: QueuedScanPosition,
+    ) -> tuple[bool, str]:
+        timeout_sec = self._double_parameter("scan_position_server_timeout_sec")
+        if not self._scan_position_client.wait_for_server(timeout_sec=timeout_sec):
+            return (
+                False,
+                f"{FailureCode.PRECONDITION_FAILED}: scan-position controller action is unavailable",
+            )
+
+        goal = ExecuteScanPosition.Goal()
+        goal.scan_position = queued_position.scan_position
+        goal.side = queued_position.side
+        goal.target_distance_m = float(
+            self._double_parameter("scan_position_target_distance_m")
+        )
+        goal.hold_duration_sec = float(
+            self._double_parameter("scan_position_hold_duration_sec")
+        )
+        goal.dry_run = self._bool_parameter("scan_position_dry_run")
+
+        send_goal_future = self._scan_position_client.send_goal_async(
+            goal,
+            feedback_callback=lambda feedback: self._on_scan_position_feedback(
+                goal_handle,
+                feedback,
+            ),
+        )
+        send_deadline = time.monotonic() + 5.0
+        while rclpy.ok() and not send_goal_future.done():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            if time.monotonic() >= send_deadline:
+                return (
+                    False,
+                    f"{FailureCode.PRECONDITION_FAILED}: timed out sending scan-position goal",
+                )
+            time.sleep(0.05)
+
+        scan_goal_handle = send_goal_future.result()
+        if scan_goal_handle is None or not scan_goal_handle.accepted:
+            return False, f"{FailureCode.PLANNING_FAILED}: scan-position goal rejected"
+
+        self._active_scan_position_goal_handle = scan_goal_handle
+        result_future = scan_goal_handle.get_result_async()
+        while rclpy.ok() and not result_future.done():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            time.sleep(0.1)
+
+        self._active_scan_position_goal_handle = None
+        wrapped_result = result_future.result()
+        if wrapped_result is None:
+            return False, f"{FailureCode.EXECUTION_FAILED}: scan-position returned no result"
+
+        result = wrapped_result.result
+        if result.success:
+            return True, result.message or "scan position aligned"
+        return False, result.message or f"{FailureCode.EXECUTION_FAILED}: scan-position failed"
+
+    def _execute_plant_analysis(
+        self,
+        goal_handle,
+        mission_id: str,
+        queued_position: QueuedScanPosition,
+    ) -> tuple[bool, str]:
+        timeout_sec = self._double_parameter("plant_analysis_server_timeout_sec")
+        if not self._plant_analysis_client.wait_for_server(timeout_sec=timeout_sec):
+            return (
+                False,
+                f"{FailureCode.PRECONDITION_FAILED}: plant analysis action is unavailable",
+            )
+
+        scan_position = queued_position.scan_position
+        goal = AnalyzePlantScan.Goal()
+        goal.scan_position = scan_position
+        goal.side = queued_position.side
+        goal.mission_id = mission_id
+        goal.request_id = (
+            f"{mission_id}:{scan_position.scan_position_id}:{queued_position.side}"
+        )
+        goal.timeout_sec = float(self._double_parameter("plant_analysis_timeout_sec"))
+        goal.dry_run = self._bool_parameter("plant_analysis_dry_run")
+
+        send_goal_future = self._plant_analysis_client.send_goal_async(
+            goal,
+            feedback_callback=lambda feedback: self._on_plant_analysis_feedback(
+                goal_handle,
+                feedback,
+            ),
+        )
+        send_deadline = time.monotonic() + 5.0
+        while rclpy.ok() and not send_goal_future.done():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            if time.monotonic() >= send_deadline:
+                return (
+                    False,
+                    f"{FailureCode.PRECONDITION_FAILED}: timed out sending plant analysis goal",
+                )
+            time.sleep(0.05)
+
+        analysis_goal_handle = send_goal_future.result()
+        if analysis_goal_handle is None or not analysis_goal_handle.accepted:
+            return False, f"{FailureCode.PLANNING_FAILED}: plant analysis goal rejected"
+
+        self._active_plant_analysis_goal_handle = analysis_goal_handle
+        result_future = analysis_goal_handle.get_result_async()
+        while rclpy.ok() and not result_future.done():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            time.sleep(0.1)
+
+        self._active_plant_analysis_goal_handle = None
+        wrapped_result = result_future.result()
+        if wrapped_result is None:
+            return False, f"{FailureCode.EXECUTION_FAILED}: plant analysis returned no result"
+
+        result = wrapped_result.result
+        if not result.success:
+            return False, result.message or f"{FailureCode.EXECUTION_FAILED}: plant analysis failed"
+
+        self._latest_plant_health = result.plant_health
+        self._latest_plant_health_time = time.monotonic()
+        return True, result.message or "plant analysis completed"
+
+    def _scan_queue_for_target(self, target_id: str) -> list[QueuedScanPosition]:
+        entries = self._parse_scan_positions()
+        normalized_target = target_id.strip()
+        if not normalized_target or normalized_target.lower() == "all":
+            return entries
+        parsed_target = self._parse_bed_side_target(normalized_target)
+        if parsed_target is None:
+            return []
+        bed_id, side = parsed_target
+        return [
+            entry
+            for entry in entries
+            if entry.scan_position.bed_id == bed_id and entry.side == side
+        ]
+
+    def _parse_scan_positions(self) -> list[QueuedScanPosition]:
+        entries: list[QueuedScanPosition] = []
+        for index, raw_entry in enumerate(self._string_array_parameter("scan_positions")):
+            parsed = self._parse_scan_position_entry(raw_entry, index)
+            if parsed is not None:
+                entries.append(parsed)
+        entries.sort(key=lambda entry: int(entry.scan_position.order))
+        return entries
+
+    def _parse_scan_position_entry(
+        self,
+        raw_entry: str,
+        index: int,
+    ) -> QueuedScanPosition | None:
+        raw_entry = raw_entry.strip()
+        if not raw_entry:
+            return None
+        try:
+            data = json.loads(raw_entry)
+        except json.JSONDecodeError:
+            data = None
+
+        if isinstance(data, dict):
+            scan_id = str(data.get("scan_position_id") or data.get("id") or f"scan_{index}")
+            bed_id = str(data.get("bed_id") or "")
+            side = str(data.get("side") or "").lower()
+            x = float(data.get("x", data.get("base_x", 0.0)))
+            y = float(data.get("y", data.get("base_y", 0.0)))
+            yaw = float(data.get("yaw", data.get("theta", 0.0)))
+            order = int(data.get("order", index))
+            enabled = bool(data.get("enabled", True))
+        else:
+            parts = [part.strip() for part in raw_entry.split(",")]
+            if len(parts) < 6:
+                self.get_logger().warning(
+                    f"Ignoring malformed scan_positions[{index}]: '{raw_entry}'"
+                )
+                return None
+            scan_id, bed_id, side = parts[0], parts[1], parts[2].lower()
+            x, y, yaw = float(parts[3]), float(parts[4]), float(parts[5])
+            enabled = parts[6].lower() not in ("false", "0", "no") if len(parts) > 6 else True
+            order = index
+
+        if not enabled:
+            return None
+        if not scan_id or not bed_id or side not in ("a", "b"):
+            self.get_logger().warning(
+                f"Ignoring scan position with invalid id/bed/side: '{raw_entry}'"
+            )
+            return None
+
+        scan_position = ScanPosition()
+        scan_position.scan_position_id = scan_id
+        scan_position.bed_id = bed_id
+        scan_position.base_pose.x = x
+        scan_position.base_pose.y = y
+        scan_position.base_pose.theta = yaw
+        scan_position.order = order
+        scan_position.enabled = True
+        return QueuedScanPosition(scan_position=scan_position, side=side)
+
+    def _publish_initial_pose_for_home(self) -> None:
+        if not self._bool_parameter("publish_initial_pose_on_mission_start"):
+            return
+        home_pose = self._home_pose_stamped()
+        msg = PoseWithCovarianceStamped()
+        msg.header = home_pose.header
+        msg.pose.pose = home_pose.pose
+        msg.pose.covariance[0] = self._double_parameter("initial_pose_covariance_xy")
+        msg.pose.covariance[7] = self._double_parameter("initial_pose_covariance_xy")
+        msg.pose.covariance[35] = self._double_parameter("initial_pose_covariance_yaw")
+        self._initial_pose_publisher.publish(msg)
+
+    def _home_pose_stamped(self) -> PoseStamped:
+        pose_values = self._float_array_parameter("home_pose")
+        while len(pose_values) < 3:
+            pose_values.append(0.0)
+        return self._pose_stamped_from_xy_yaw(
+            pose_values[0],
+            pose_values[1],
+            pose_values[2],
+        )
+
+    def _pose_from_scan_position(self, scan_position: ScanPosition) -> PoseStamped:
+        return self._pose_stamped_from_xy_yaw(
+            scan_position.base_pose.x,
+            scan_position.base_pose.y,
+            scan_position.base_pose.theta,
+        )
+
+    def _pose_stamped_from_xy_yaw(self, x: float, y: float, yaw: float) -> PoseStamped:
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        pose.pose.orientation.z = math.sin(float(yaw) / 2.0)
+        pose.pose.orientation.w = math.cos(float(yaw) / 2.0)
+        return pose
 
     def _execute_bed_side_scan(
         self,
@@ -736,6 +1291,24 @@ class MissionManagerNode(Node):
             step = feedback.message
         self._publish_feedback(goal_handle, step, feedback.progress)
 
+    def _on_scan_position_feedback(self, goal_handle, feedback_msg) -> None:
+        feedback = feedback_msg.feedback
+        step = (
+            f"Scan pose {feedback.phase}: "
+            f"distance_error={feedback.distance_error_m:.3f}m, "
+            f"yaw_error={feedback.yaw_error_rad:.3f}rad"
+        )
+        if feedback.message:
+            step = feedback.message
+        self._publish_feedback(goal_handle, step, feedback.progress)
+
+    def _on_plant_analysis_feedback(self, goal_handle, feedback_msg) -> None:
+        feedback = feedback_msg.feedback
+        step = f"Plant analysis {feedback.phase}"
+        if feedback.message:
+            step = feedback.message
+        self._publish_feedback(goal_handle, step, feedback.progress)
+
     def _cancel_active_work(self) -> None:
         self._publish_zero_twist()
         if self._active_nav_goal_handle is not None:
@@ -750,6 +1323,22 @@ class MissionManagerNode(Node):
             except Exception as exc:
                 self.get_logger().warn(f"Could not cancel bed-side scan goal: {exc}")
             self._active_bed_side_goal_handle = None
+        if self._active_scan_position_goal_handle is not None:
+            try:
+                self._active_scan_position_goal_handle.cancel_goal_async()
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"Could not cancel scan-position goal: {exc}"
+                )
+            self._active_scan_position_goal_handle = None
+        if self._active_plant_analysis_goal_handle is not None:
+            try:
+                self._active_plant_analysis_goal_handle.cancel_goal_async()
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"Could not cancel plant analysis goal: {exc}"
+                )
+            self._active_plant_analysis_goal_handle = None
 
     def _publish_zero_twist(self) -> None:
         self._cmd_vel_publisher.publish(Twist())
@@ -779,6 +1368,35 @@ class MissionManagerNode(Node):
         status.message = message
         self._navigation_status_publisher.publish(status)
 
+    def _publish_current_mission(
+        self,
+        mission_id: str,
+        phase: str,
+        message: str,
+        queued_position: QueuedScanPosition | None = None,
+        queue_index: int = 0,
+        queue_total: int = 0,
+        target_pose: PoseStamped | None = None,
+        error: bool = False,
+    ) -> None:
+        status = CurrentMission()
+        status.mission_id = mission_id
+        status.phase = phase
+        if queued_position is not None:
+            status.active_bed_id = queued_position.scan_position.bed_id
+            status.active_side = queued_position.side
+            status.active_scan_position_id = (
+                queued_position.scan_position.scan_position_id
+            )
+        status.queue_index = int(max(0, queue_index))
+        status.queue_total = int(max(0, queue_total))
+        status.current_pose = self._latest_pose
+        status.target_pose = target_pose if target_pose is not None else PoseStamped()
+        status.latest_plant_health = self._latest_plant_health
+        status.error = bool(error)
+        status.message = message
+        self._current_mission_publisher.publish(status)
+
     def _publish_scan_progress(
         self,
         message: str,
@@ -786,6 +1404,7 @@ class MissionManagerNode(Node):
         active_scan_position_id: str = "",
         active_flower_id: str = "",
         detection_status: str = "",
+        latest_plant_health: PlantHealth | None = None,
         error: bool = False,
     ) -> None:
         progress = ScanProgress()
@@ -793,6 +1412,8 @@ class MissionManagerNode(Node):
         progress.active_scan_position_id = active_scan_position_id
         progress.active_flower_id = active_flower_id
         progress.detection_status = detection_status
+        if latest_plant_health is not None:
+            progress.latest_plant_health = latest_plant_health
         progress.error = error
         progress.message = message
         self._scan_progress_publisher.publish(progress)

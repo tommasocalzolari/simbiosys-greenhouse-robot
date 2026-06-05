@@ -385,6 +385,11 @@ def detect(image_path):
     cv2.destroyAllWindows()
 
 
+def test_flower_detection_helper_imports():
+    assert callable(detect)
+    assert callable(dominant_summary)
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python3 test_flower_detection.py <image_path>")

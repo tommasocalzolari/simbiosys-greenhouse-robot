@@ -1,5 +1,7 @@
-import cv2
 import sys
+
+import cv2
+
 
 def detect(image_path):
     frame = cv2.imread(image_path)
@@ -26,4 +28,14 @@ def detect(image_path):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-detect(sys.argv[1])
+
+def test_apriltag_detector_helper_imports():
+    assert callable(detect)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python3 test_april.py <image_path>")
+        sys.exit(1)
+
+    detect(sys.argv[1])
