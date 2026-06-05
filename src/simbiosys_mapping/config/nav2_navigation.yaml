@@ -106,13 +106,13 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.26          # must be above the observed ~0.20 m/s linear deadband
       max_vel_y: 0.0
-      max_vel_theta: 0.8      # allow stronger turns in tight spaces
+      max_vel_theta: 1.0      # allow stronger turns in tight spaces
       min_speed_xy: 0.0
       max_speed_xy: 0.24       # above linear deadband but still slow for a small map
-      min_speed_theta: 0.40     # observed minimum angular command needed to actually rotate
+      min_speed_theta: 0.45     # observed minimum angular command needed to actually rotate
       acc_lim_x: 0.4          #0.5
       acc_lim_y: 0.0
-      acc_lim_theta: 1.3       # stronger angular acceleration for initial turns/corners
+      acc_lim_theta: 1.6       # stronger angular acceleration for initial turns/corners
       decel_lim_x: -0.35        # allow braking/recovery without being too abrupt
       decel_lim_y: 0.0
       decel_lim_theta: -1.0     # stronger angular deceleration for corners
@@ -190,7 +190,7 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.30
+        inflation_radius: 0.25
         cost_scaling_factor: 3.0
       always_send_full_costmap: true
 

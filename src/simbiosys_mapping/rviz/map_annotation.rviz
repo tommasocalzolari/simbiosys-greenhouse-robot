@@ -12,7 +12,7 @@ Visualization Manager:
       Class: rviz_default_plugins/Map
       Color Scheme: map
       Draw Behind: true
-      Name: Cleaned Map
+      Name: Map
       Topic:
         Depth: 1
         Durability Policy: Transient Local
@@ -48,6 +48,7 @@ Visualization Manager:
       Single click: true
       Topic:
         Value: /clicked_point
+      Value: false
   Value: true
   Views:
     Current:

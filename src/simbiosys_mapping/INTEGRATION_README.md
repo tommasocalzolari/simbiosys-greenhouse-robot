@@ -43,18 +43,23 @@ src/simbiosys_mapping/
     amcl_localization.yaml
     nav2_navigation.yaml
   launch/
+    checkpoint_navigation.launch.py
     getmap.launch.py
     localization.launch.py
+    map_annotation.launch.py
     map_post_processing.launch.py
     navigation.launch.py
   rviz/
     getmap.rviz
     localization.rviz
+    map_annotation.rviz
     navigation.rviz
   simbiosys_mapping/
     __init__.py
+    checkpoint_navigator_node.py
     getmap_node.py
     initial_pose_node.py
+    map_annotation_node.py
     map_post_processor_node.py
     mapping_status_node.py
   worlds/
@@ -260,9 +265,42 @@ map -> odom
 Initial pose is manual by default. The operator should use RViz `2D Pose
 Estimate`.
 
+### `launch/map_annotation.launch.py`
+
+Starts the annotation-only helper. It reads the saved map and publishes it on
+`/map` for RViz, but it does not modify the map YAML or PGM files.
+
+```bash
+ros2 launch simbiosys_mapping map_annotation.launch.py
+```
+
+Main input:
+
+```text
+maps/mirte_map.yaml
+```
+
+Main output:
+
+```text
+maps/mirte_map_annotations.json
+```
+
+The intended RViz annotation order is:
+
+1. `2D Pose Estimate` for home pose.
+2. `2D Goal Pose` for each checkpoint in visit order.
+
+Each checkpoint stores position, orientation, and yaw. The annotation RViz view
+shows a pin, heading arrow, and number for every saved checkpoint.
+
+Use this launch when the map is already good and should not be changed.
+
 ### `launch/map_post_processing.launch.py`
 
-Starts the standalone offline map cleanup and annotation helper.
+Starts the older offline map cleanup helper. This launch can overwrite the map
+YAML/PGM files, so use `map_annotation.launch.py` instead when only annotations
+are needed.
 
 ```bash
 ros2 launch simbiosys_mapping map_post_processing.launch.py
@@ -302,10 +340,49 @@ The intended RViz annotation order is:
 
 1. `2D Pose Estimate` for home pose.
 2. `2D Goal Pose` for final pose.
-3. `Publish Point` for each flower bed start position in bed-number order.
+3. `2D Goal Pose` again for each flower bed checkpoint in bed-number order.
+
+Use `2D Goal Pose` for flower beds because it saves both position and
+orientation. `/clicked_point` is kept only as a position-only fallback.
 
 Do not run Nav2 while using `/goal_pose` for annotation, because Nav2 also uses
 that topic for real goals.
+
+### `launch/checkpoint_navigation.launch.py`
+
+Starts the command-driven checkpoint navigator. This node reads:
+
+```text
+maps/mirte_map_annotations.json
+```
+
+It sends one Nav2 `NavigateToPose` goal at a time. It does not pre-plan the full
+route. The operation manager should publish string commands on:
+
+```text
+/checkpoint_commands
+```
+
+For example:
+
+```bash
+ros2 topic pub --once /checkpoint_commands std_msgs/msg/String "{data: next}"
+```
+
+The route is:
+
+```text
+home pose -> checkpoint_1 -> checkpoint_2 -> ...
+```
+
+The robot is expected to start already placed and localized at home. The first
+`next` command sends the robot to `checkpoint_1`.
+
+Status is published as JSON text on:
+
+```text
+/checkpoint_status
+```
 
 ### `launch/navigation.launch.py`
 
@@ -464,9 +541,11 @@ Keep these for now:
 
 | Node file | Console script | Purpose |
 | --- | --- | --- |
+| `simbiosys_mapping/checkpoint_navigator_node.py` | `checkpoint_navigator_node` | Reads annotations and advances through Nav2 goals via `/checkpoint_commands`. |
 | `simbiosys_mapping/getmap_node.py` | `getmap_node` | Saves `/map` to the workspace `maps/` folder automatically or on service call. |
 | `simbiosys_mapping/initial_pose_node.py` | `initial_pose_node` | Optional scripted AMCL initial-pose publisher. Disabled in normal navigation use. |
-| `simbiosys_mapping/map_post_processor_node.py` | `map_post_processor_node` | Cleans a saved occupancy map in place and records home/final/flower-bed annotations. |
+| `simbiosys_mapping/map_annotation_node.py` | `map_annotation_node` | Publishes a saved map read-only and records home/checkpoint annotations. |
+| `simbiosys_mapping/map_post_processor_node.py` | `map_post_processor_node` | Older cleanup node that can overwrite the saved map files. |
 | `simbiosys_mapping/mapping_status_node.py` | `mapping_status_node` | Small topic-status helper for mapping debug. |
 
 ## Runtime Workflow
@@ -487,11 +566,10 @@ Mapping:
 ros2 launch simbiosys_mapping getmap.launch.py simulation:=false
 ```
 
-Map cleanup and annotation:
+Map annotation without modifying the map:
 
 ```bash
-ros2 launch simbiosys_mapping map_post_processing.launch.py
-ros2 service call /map_post_processor_node/process_map std_srvs/srv/Trigger "{}"
+ros2 launch simbiosys_mapping map_annotation.launch.py
 ```
 
 Localization only:
