@@ -13,7 +13,7 @@ class BugDetectionSiftNode(Node):
     """Detect the bug tag in wrist camera frames using SIFT template matching."""
 
     def __init__(self) -> None:
-        super().__init__("bug_detection_sift_node")
+        super().__init__("bug_detection_node")
         self.declare_parameter("camera_topic", "/gripper_camera/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("template_path", "models/bug_template.png")
@@ -44,7 +44,6 @@ class BugDetectionSiftNode(Node):
         self._sift = cv2.SIFT_create()
         self._matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
         self._current_bed_id = -1
-        self._bug_count = 0
         self._template = self._load_template()
         self._template_keypoints = []
         self._template_descriptors = None
@@ -57,11 +56,6 @@ class BugDetectionSiftNode(Node):
         self._bug_detected_publisher = self.create_publisher(
             Bool,
             "/simbiosys/bug_detected",
-            10,
-        )
-        self._bug_count_publisher = self.create_publisher(
-            Int32,
-            "/simbiosys/bug_count",
             10,
         )
         self._debug_publisher = self.create_publisher(
@@ -91,8 +85,8 @@ class BugDetectionSiftNode(Node):
 
         self.get_logger().info(
             f"SIFT bug detection listening on {self._subscribed_camera_topic}, "
-            "publishing /simbiosys/bug_detected, /simbiosys/bug_count, "
-            "/simbiosys/bug_debug, and /simbiosys/bug_debug_image"
+            "publishing /simbiosys/bug_detected, /simbiosys/bug_debug, "
+            "and /simbiosys/bug_debug_image"
         )
         self.get_logger().info(
             f"SIFT template_path={self._resolve_template_path()}, "
@@ -122,8 +116,6 @@ class BugDetectionSiftNode(Node):
             return
 
         detected, good_matches, debug_frame = self._detect_bug(frame)
-        if detected:
-            self._bug_count += 1
 
         self._publish_results(detected, len(good_matches), debug_frame)
         if detected:
@@ -238,10 +230,6 @@ class BugDetectionSiftNode(Node):
         detected_msg = Bool()
         detected_msg.data = detected
         self._bug_detected_publisher.publish(detected_msg)
-
-        count_msg = Int32()
-        count_msg.data = self._bug_count
-        self._bug_count_publisher.publish(count_msg)
 
         debug_msg = String()
         debug_msg.data = (
