@@ -1,0 +1,183 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <world name="greenhouse_8_beds">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <gravity>0 0 -9.8</gravity>
+    <physics type="ode">
+      <max_step_size>0.01</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>100</real_time_update_rate>
+    </physics>
+
+    <scene>
+      <ambient>0.82 0.82 0.78 1</ambient>
+      <background>0.72 0.86 0.92 1</background>
+      <shadows>false</shadows>
+    </scene>
+
+    <!-- Outer greenhouse boundary. -->
+    <model name="north_wall">
+      <static>true</static>
+      <pose>0 2.55 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>7.2 0.12 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>7.2 0.12 0.5</size></box></geometry>
+          <material>
+            <ambient>0.45 0.45 0.45 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="south_wall">
+      <static>true</static>
+      <pose>0 -2.55 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>7.2 0.12 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>7.2 0.12 0.5</size></box></geometry>
+          <material>
+            <ambient>0.45 0.45 0.45 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="west_wall">
+      <static>true</static>
+      <pose>-3.6 0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.12 5.1 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.12 5.1 0.5</size></box></geometry>
+          <material>
+            <ambient>0.45 0.45 0.45 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="east_wall">
+      <static>true</static>
+      <pose>3.6 0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.12 5.1 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.12 5.1 0.5</size></box></geometry>
+          <material>
+            <ambient>0.45 0.45 0.45 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Eight straight flower beds in a 4 by 2 formation.
+         All beds are axis-aligned rectangles in top view. -->
+    <model name="flower_bed_1">
+      <static>true</static>
+      <pose>-2.25 1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_2">
+      <static>true</static>
+      <pose>-0.75 1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_3">
+      <static>true</static>
+      <pose>0.75 1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_4">
+      <static>true</static>
+      <pose>2.25 1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_5">
+      <static>true</static>
+      <pose>-2.25 -1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_6">
+      <static>true</static>
+      <pose>-0.75 -1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_7">
+      <static>true</static>
+      <pose>0.75 -1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="flower_bed_8">
+      <static>true</static>
+      <pose>2.25 -1.0 0.225 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.95 0.45 0.45</size></box></geometry></collision>
+        <visual name="soil"><geometry><box><size>0.95 0.45 0.40</size></box></geometry><material><ambient>0.36 0.20 0.10 1</ambient><diffuse>0.36 0.20 0.10 1</diffuse></material></visual>
+        <visual name="plants"><pose>0 0 0.215 0 0 0</pose><geometry><box><size>0.88 0.38 0.04</size></box></geometry><material><ambient>0.10 0.45 0.16 1</ambient><diffuse>0.10 0.55 0.18 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>0 0 8.0 0 1.5708 0</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+  </world>
+</sdf>
