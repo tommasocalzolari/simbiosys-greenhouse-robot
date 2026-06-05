@@ -9,18 +9,16 @@ from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Bool, Int32, String
 
 
-class BugDetectionNode(Node):
-    """Detect bugs in wrist camera frames using the shared YOLOv8 model."""
-
-    _YOLO_BUG_CLASS_ID = 3
+class BugDetectionSiftNode(Node):
+    """Detect the bug tag in wrist camera frames using SIFT template matching."""
 
     def __init__(self) -> None:
-        super().__init__("bug_detection_node")
-        default_model_path = "models/flower_model (Copy).pt"
+        super().__init__("bug_detection_sift_node")
         self.declare_parameter("camera_topic", "/gripper_camera/image_raw")
         self.declare_parameter("use_compressed", True)
-        self.declare_parameter("model_path", default_model_path)
-        self.declare_parameter("camera_distance_mm", 200.0)
+        self.declare_parameter("template_path", "models/bug_template.png")
+        self.declare_parameter("min_matches", 10)
+        self.declare_parameter("ratio_threshold", 0.75)
 
         self._camera_topic = (
             self.get_parameter("camera_topic").get_parameter_value().string_value
@@ -28,20 +26,33 @@ class BugDetectionNode(Node):
         self._use_compressed = (
             self.get_parameter("use_compressed").get_parameter_value().bool_value
         )
+        self._template_path = (
+            self.get_parameter("template_path").get_parameter_value().string_value
+        )
+        self._min_matches = (
+            self.get_parameter("min_matches").get_parameter_value().integer_value
+        )
+        self._ratio_threshold = (
+            self.get_parameter("ratio_threshold").get_parameter_value().double_value
+        )
+
         self._subscribed_camera_topic = self._camera_topic
         if self._use_compressed:
             self._subscribed_camera_topic = f"{self._camera_topic}/compressed"
-        self._model_path = (
-            self.get_parameter("model_path").get_parameter_value().string_value
-        )
-        self._camera_distance_mm = (
-            self.get_parameter("camera_distance_mm").get_parameter_value().double_value
-        )
 
         self._bridge = CvBridge()
+        self._sift = cv2.SIFT_create()
+        self._matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
         self._current_bed_id = -1
         self._bug_count = 0
-        self._yolo_model = self._load_yolo_model()
+        self._template = self._load_template()
+        self._template_keypoints = []
+        self._template_descriptors = None
+        if self._template is not None:
+            (
+                self._template_keypoints,
+                self._template_descriptors,
+            ) = self._sift.detectAndCompute(self._template, None)
 
         self._bug_detected_publisher = self.create_publisher(
             Bool,
@@ -58,6 +69,12 @@ class BugDetectionNode(Node):
             "/simbiosys/bug_debug",
             10,
         )
+        self._debug_image_publisher = self.create_publisher(
+            Image,
+            "/simbiosys/bug_debug_image",
+            10,
+        )
+
         image_msg_type = CompressedImage if self._use_compressed else Image
         self._image_subscription = self.create_subscription(
             image_msg_type,
@@ -73,17 +90,28 @@ class BugDetectionNode(Node):
         )
 
         self.get_logger().info(
-            f"Bug detection listening on {self._subscribed_camera_topic}, "
+            f"SIFT bug detection listening on {self._subscribed_camera_topic}, "
             "publishing /simbiosys/bug_detected, /simbiosys/bug_count, "
-            "and /simbiosys/bug_debug"
+            "/simbiosys/bug_debug, and /simbiosys/bug_debug_image"
         )
         self.get_logger().info(
-            f"Bug detection backend=YOLOv8, model_path={self._model_path}"
+            f"SIFT template_path={self._resolve_template_path()}, "
+            f"min_matches={self._min_matches}, "
+            f"ratio_threshold={self._ratio_threshold:.2f}"
         )
-        self.get_logger().info(
-            f"Bug detection operating distance: {self._camera_distance_mm:.1f}mm "
-            "(intended bug scan distance)"
-        )
+
+    def _resolve_template_path(self) -> Path:
+        template_path = Path(self._template_path).expanduser()
+        if not template_path.is_absolute():
+            template_path = Path(__file__).parent / template_path
+        return template_path
+
+    def _load_template(self) -> np.ndarray | None:
+        template_path = self._resolve_template_path()
+        template = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+        if template is None:
+            self.get_logger().warning(f"Could not load SIFT bug template: {template_path}")
+        return template
 
     def _on_current_bed_id(self, msg: Int32) -> None:
         self._current_bed_id = msg.data
@@ -93,31 +121,21 @@ class BugDetectionNode(Node):
         if frame is None:
             return
 
-        frame_bug_count = self._detect_bug_count(frame)
-        self._publish_results(frame_bug_count)
+        detected, good_matches, debug_frame = self._detect_bug(frame)
+        if detected:
+            self._bug_count += 1
 
-    def _load_yolo_model(self):
-        model_path = Path(self._model_path).expanduser()
-        if not model_path.is_absolute():
-            model_path = Path(__file__).parent / model_path
-
-        if not model_path.exists():
-            self.get_logger().warning(f"YOLO model not found at {model_path}")
-            return None
-
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:
-            self.get_logger().warning(f"ultralytics is not installed: {exc}")
-            return None
-
-        try:
-            return YOLO(str(model_path))
-        except Exception as exc:  # noqa: BLE001 - keep node alive if loading fails.
-            self.get_logger().warning(
-                f"Could not load YOLO model from {model_path}: {exc}"
+        self._publish_results(detected, len(good_matches), debug_frame)
+        if detected:
+            self.get_logger().info(
+                f"Bug detected! matches={len(good_matches)}, "
+                f"bed_id={self._current_bed_id}"
             )
-            return None
+        else:
+            self.get_logger().info(
+                f"No bug detected. matches={len(good_matches)}, "
+                f"bed_id={self._current_bed_id}"
+            )
 
     def _image_msg_to_frame(
         self,
@@ -136,32 +154,87 @@ class BugDetectionNode(Node):
             self.get_logger().warning(f"Could not convert camera image: {exc}")
             return None
 
-    def _detect_bug_count(self, frame: np.ndarray) -> int:
-        if self._yolo_model is None:
-            return 0
+    def _detect_bug(
+        self,
+        frame: np.ndarray,
+    ) -> tuple[bool, list[cv2.DMatch], np.ndarray]:
+        debug_frame = frame.copy()
+        if self._template is None or self._template_descriptors is None:
+            return False, [], debug_frame
 
-        results = self._yolo_model.predict(frame, conf=0.4, iou=0.5, verbose=False)
-        if not results or results[0].boxes is None:
-            return 0
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        image_keypoints, image_descriptors = self._sift.detectAndCompute(gray, None)
+        good_matches = self._match_descriptors(image_descriptors)
+        detected = len(good_matches) >= self._min_matches
 
-        bug_count = 0
-        for box in results[0].boxes:
-            if int(box.cls[0]) == self._YOLO_BUG_CLASS_ID:
-                bug_count += 1
-
-        if bug_count > 0:
-            self.get_logger().info(
-                f"Bug detected! frame_count={bug_count}, "
-                f"bed_id={self._current_bed_id}"
-            )
-
-        return bug_count
-
-    def _publish_results(self, frame_bug_count: int) -> None:
-        detected = frame_bug_count > 0
         if detected:
-            self._bug_count += frame_bug_count
+            self._draw_bug_bounds(debug_frame, image_keypoints, good_matches)
 
+        return detected, good_matches, debug_frame
+
+    def _match_descriptors(self, image_descriptors) -> list[cv2.DMatch]:
+        if image_descriptors is None:
+            return []
+
+        matches = self._matcher.knnMatch(
+            self._template_descriptors,
+            image_descriptors,
+            k=2,
+        )
+        good_matches = []
+        for match_pair in matches:
+            if len(match_pair) != 2:
+                continue
+
+            first, second = match_pair
+            if first.distance < self._ratio_threshold * second.distance:
+                good_matches.append(first)
+
+        return good_matches
+
+    def _draw_bug_bounds(
+        self,
+        debug_frame: np.ndarray,
+        image_keypoints,
+        good_matches: list[cv2.DMatch],
+    ) -> None:
+        if len(good_matches) < 4:
+            return
+
+        source_points = np.float32(
+            [self._template_keypoints[match.queryIdx].pt for match in good_matches]
+        ).reshape(-1, 1, 2)
+        destination_points = np.float32(
+            [image_keypoints[match.trainIdx].pt for match in good_matches]
+        ).reshape(-1, 1, 2)
+        homography, _ = cv2.findHomography(
+            source_points,
+            destination_points,
+            cv2.RANSAC,
+            5.0,
+        )
+        if homography is None:
+            return
+
+        height, width = self._template.shape
+        corners = np.float32(
+            [[0, 0], [width, 0], [width, height], [0, height]]
+        ).reshape(-1, 1, 2)
+        transformed_corners = cv2.perspectiveTransform(corners, homography)
+        cv2.polylines(
+            debug_frame,
+            [np.int32(transformed_corners)],
+            True,
+            (0, 0, 255),
+            3,
+        )
+
+    def _publish_results(
+        self,
+        detected: bool,
+        matches_count: int,
+        debug_frame: np.ndarray,
+    ) -> None:
         detected_msg = Bool()
         detected_msg.data = detected
         self._bug_detected_publisher.publish(detected_msg)
@@ -173,16 +246,21 @@ class BugDetectionNode(Node):
         debug_msg = String()
         debug_msg.data = (
             f"bug_detected={detected}; "
-            f"bed_id={self._current_bed_id}; "
-            f"frame_count={frame_bug_count}; "
-            f"total_count={self._bug_count}"
+            f"matches={matches_count}; "
+            f"bed_id={self._current_bed_id}"
         )
         self._debug_publisher.publish(debug_msg)
+
+        try:
+            debug_image_msg = self._bridge.cv2_to_imgmsg(debug_frame, encoding="bgr8")
+            self._debug_image_publisher.publish(debug_image_msg)
+        except CvBridgeError as exc:
+            self.get_logger().warning(f"Could not publish debug image: {exc}")
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = BugDetectionNode()
+    node = BugDetectionSiftNode()
     try:
         rclpy.spin(node)
     finally:

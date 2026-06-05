@@ -2,17 +2,19 @@ import sys
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 
-MODEL_PATH = (
+TEMPLATE_PATH = (
     Path(__file__).parent
     / "src"
     / "simbiosys_perception"
     / "simbiosys_perception"
     / "models"
-    / "flower_model (Copy).pt"
+    / "bug_template.png"
 )
-BUG_CLASS_ID = 3
+MIN_MATCHES = 10
+RATIO_THRESHOLD = 0.75
 MAX_DISPLAY_WIDTH = 1200
 
 
@@ -26,72 +28,77 @@ def resize_for_display(image):
 
 
 def detect_bug(image_path):
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        print(f"ultralytics not available: {exc}")
+    template = cv2.imread(str(TEMPLATE_PATH), cv2.IMREAD_GRAYSCALE)
+    if template is None:
+        print(f"Could not load template: {TEMPLATE_PATH}")
         return
 
-    image = cv2.imread(image_path)
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
         print(f"Could not load image: {image_path}")
         return
+    result = cv2.imread(image_path)
 
-    model = YOLO(str(MODEL_PATH))
-    result = image.copy()
-    detections = []
+    sift = cv2.SIFT_create()
+    template_keypoints, template_descriptors = sift.detectAndCompute(template, None)
+    image_keypoints, image_descriptors = sift.detectAndCompute(image, None)
 
-    for yolo_result in model(image, conf=0.05, iou=0.5, verbose=False):
-        boxes = yolo_result.boxes
-        if boxes is None:
-            continue
+    good_matches = []
+    if template_descriptors is not None and image_descriptors is not None:
+        matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+        matches = matcher.knnMatch(template_descriptors, image_descriptors, k=2)
 
-        for box in boxes:
-            class_id = int(box.cls[0])
-            if class_id != BUG_CLASS_ID:
+        for match_pair in matches:
+            if len(match_pair) != 2:
                 continue
 
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            x1 = max(0, int(round(x1)))
-            y1 = max(0, int(round(y1)))
-            x2 = max(0, int(round(x2)))
-            y2 = max(0, int(round(y2)))
-            confidence = float(box.conf[0]) if box.conf is not None else 0.0
+            first, second = match_pair
+            if first.distance < RATIO_THRESHOLD * second.distance:
+                good_matches.append(first)
 
-            cv2.rectangle(result, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.putText(
+    bug_detected = len(good_matches) >= MIN_MATCHES
+    if bug_detected:
+        source_points = np.float32(
+            [template_keypoints[match.queryIdx].pt for match in good_matches]
+        ).reshape(-1, 1, 2)
+        destination_points = np.float32(
+            [image_keypoints[match.trainIdx].pt for match in good_matches]
+        ).reshape(-1, 1, 2)
+        homography, _ = cv2.findHomography(
+            source_points,
+            destination_points,
+            cv2.RANSAC,
+            5.0,
+        )
+        if homography is not None:
+            height, width = template.shape
+            corners = np.float32(
+                [[0, 0], [width, 0], [width, height], [0, height]]
+            ).reshape(-1, 1, 2)
+            transformed_corners = cv2.perspectiveTransform(corners, homography)
+            cv2.polylines(
                 result,
-                f"bug {confidence:.2f}",
-                (x1, max(25, y1 - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
+                [np.int32(transformed_corners)],
+                True,
                 (0, 0, 255),
-                2,
+                3,
             )
-            detections.append((x1, y1, x2, y2, confidence))
-
-    if detections:
-        print(f"Bug detections: {len(detections)}")
-        for index, (x1, y1, x2, y2, confidence) in enumerate(detections, start=1):
-            print(
-                f"{index}. bbox=({x1}, {y1}, {x2}, {y2}); "
-                f"confidence={confidence:.3f}"
-            )
+        print(f"Bug detected! Good matches: {len(good_matches)}")
     else:
-        print("No bug detected")
+        print(f"No bug detected. Good matches: {len(good_matches)}")
 
     cv2.imshow("Bug detection", resize_for_display(result))
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
 
-def test_bug_detection_helper_imports():
+def test_bug_detection_sift_helper_imports():
     assert callable(detect_bug)
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python3 test_bug_detection.py <image_path>")
+        print("Usage: python3 test_bug_detection_sift.py <image_path>")
         sys.exit(1)
 
     detect_bug(sys.argv[1])
