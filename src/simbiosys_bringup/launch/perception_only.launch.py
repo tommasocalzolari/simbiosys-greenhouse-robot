@@ -8,12 +8,6 @@ def generate_launch_description():
         [
             Node(
                 package="simbiosys_perception",
-                executable="plant_analysis_node",
-                name="plant_analysis_node",
-                output="screen",
-            ),
-            Node(
-                package="simbiosys_perception",
                 executable="flower_detection_node",
                 name="flower_detection_node",
                 output="screen",

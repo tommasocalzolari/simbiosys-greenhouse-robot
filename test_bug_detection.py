@@ -36,7 +36,7 @@ def detect_bug(image_path):
     result = image.copy()
     detections = []
 
-    for yolo_result in model(image, conf=0.4, iou=0.5, verbose=False):
+    for yolo_result in model(image, conf=0.05, iou=0.5, verbose=False):
         boxes = yolo_result.boxes
         if boxes is None:
             continue

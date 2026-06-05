@@ -1,5 +1,6 @@
 bool detected
-float32 confidence
-string label
-geometry_msgs/Point position
+string dominant_label
+int32 dominant_count
+float32 dominant_confidence
+float32[] heights_cm
 string message

@@ -18,7 +18,6 @@ YOLO_FLOWER_LABELS = {
     1: "white",
     2: "light_pink",
 }
-YOLO_BUG_CLASS_ID = 3
 HSV_RANGES = {
     "magenta": ([165, 150, 70], [180, 255, 180]),
     "light": ([0, 3, 175], [180, 90, 255]),
@@ -32,6 +31,10 @@ MAX_DISPLAY_WIDTH = 1200
 MAX_BBOX_CENTER_Y_FRACTION = 0.35
 MIN_ASPECT_RATIO = 0.4
 MAX_ASPECT_RATIO = 2.5
+FOCAL_LENGTH_Y_PX = 615.0
+CAMERA_HEIGHT_MM = 80.0
+BOX_HEIGHT_MM = 190.0
+CAMERA_DISTANCE_MM = 450.0
 
 
 def print_hsv_on_click(event, x, y, _flags, user_data):
@@ -91,11 +94,22 @@ def resize_for_display(image):
     return resized, scale
 
 
-def draw_detection(result, label, bbox, center, top_pixel, confidence=None):
+def draw_detection(
+    result,
+    label,
+    bbox,
+    center=None,
+    top_pixel=None,
+    confidence=None,
+    color=(0, 255, 0),
+    thickness=3,
+):
     x, y, width, height = bbox
-    cv2.rectangle(result, (x, y), (x + width, y + height), (0, 255, 0), 3)
-    cv2.circle(result, center, 7, (0, 0, 255), -1)
-    cv2.circle(result, top_pixel, 7, (255, 0, 0), -1)
+    cv2.rectangle(result, (x, y), (x + width, y + height), color, thickness)
+    if center is not None:
+        cv2.circle(result, center, 7, (0, 0, 255), -1)
+    if top_pixel is not None:
+        cv2.circle(result, top_pixel, 7, (255, 0, 0), -1)
     text = label
     if confidence is not None:
         text = f"{label} {confidence:.2f}"
@@ -105,9 +119,95 @@ def draw_detection(result, label, bbox, center, top_pixel, confidence=None):
         (x, max(25, y - 10)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.8,
-        (0, 255, 0),
+        color,
         2,
     )
+
+
+def bbox_iou(first, second):
+    first_x, first_y, first_width, first_height = first
+    second_x, second_y, second_width, second_height = second
+    first_x2 = first_x + first_width
+    first_y2 = first_y + first_height
+    second_x2 = second_x + second_width
+    second_y2 = second_y + second_height
+
+    intersection_x1 = max(first_x, second_x)
+    intersection_y1 = max(first_y, second_y)
+    intersection_x2 = min(first_x2, second_x2)
+    intersection_y2 = min(first_y2, second_y2)
+    intersection_width = max(0, intersection_x2 - intersection_x1)
+    intersection_height = max(0, intersection_y2 - intersection_y1)
+    intersection_area = intersection_width * intersection_height
+    first_area = first_width * first_height
+    second_area = second_width * second_height
+    union_area = first_area + second_area - intersection_area
+    if union_area <= 0:
+        return 0.0
+    return intersection_area / union_area
+
+
+def apply_nms(detections):
+    kept = []
+    ordered = sorted(
+        detections,
+        key=lambda detection: detection["confidence"],
+        reverse=True,
+    )
+    for detection in ordered:
+        if all(
+            bbox_iou(detection["bbox"], kept_detection["bbox"]) <= 0.4
+            for kept_detection in kept
+        ):
+            kept.append(detection)
+    return kept
+
+
+def estimate_height_cm(image_shape, top_pixel):
+    image_height = image_shape[0]
+    _top_x, top_y = top_pixel
+    depth_m = CAMERA_DISTANCE_MM / 1000.0
+    principal_y = image_height / 2.0
+    top_y_offset_m = (top_y - principal_y) * depth_m / FOCAL_LENGTH_Y_PX
+    flower_top_height_above_ground_mm = CAMERA_HEIGHT_MM - top_y_offset_m * 1000.0
+    flower_height_above_box_mm = flower_top_height_above_ground_mm - BOX_HEIGHT_MM
+    return flower_height_above_box_mm / 10.0
+
+
+def dominant_summary(detections):
+    if not detections:
+        return "none", 0, []
+
+    counts = {}
+    for detection in detections:
+        counts[detection["color"]] = counts.get(detection["color"], 0) + 1
+
+    dominant_label = max(
+        counts,
+        key=lambda color: (
+            counts[color],
+            sum(
+                detection["confidence"]
+                for detection in detections
+                if detection["color"] == color
+            )
+            / counts[color],
+            color,
+        ),
+    )
+    dominant_detections = [
+        detection
+        for detection in detections
+        if detection["color"] == dominant_label
+    ]
+    heights_cm = [
+        detection["height_cm"]
+        for detection in sorted(
+            dominant_detections,
+            key=lambda detection: detection["bbox"][0],
+        )
+    ]
+    return dominant_label, counts[dominant_label], heights_cm
 
 
 def print_detections(detections):
@@ -123,6 +223,8 @@ def print_detections(detections):
         print(f"   top pixel: {detection['top_pixel']}")
         if "confidence" in detection:
             print(f"   confidence: {detection['confidence']:.3f}")
+        if "height_cm" in detection:
+            print(f"   height_cm: {detection['height_cm']:.1f}")
         if "area" in detection:
             print(f"   area: {detection['area']:.0f}")
 
@@ -141,7 +243,7 @@ def detect_with_yolo(image):
         return None
     result = image.copy()
     detections = []
-    bug_detected = False
+    image_height = image.shape[0]
 
     for yolo_result in model.predict(image, verbose=False):
         boxes = yolo_result.boxes
@@ -150,31 +252,21 @@ def detect_with_yolo(image):
 
         for box in boxes:
             class_id = int(box.cls[0])
-            if class_id == YOLO_BUG_CLASS_ID:
-                bug_detected = True
-                continue
-
-            color_name = YOLO_FLOWER_LABELS.get(class_id)
-            if color_name is None:
-                continue
-
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
             x = max(0, int(round(x1)))
             y = max(0, int(round(y1)))
             width = max(1, int(round(x2 - x1)))
             height = max(1, int(round(y2 - y1)))
-            center = (int(round(x + width / 2.0)), int(round(y + height / 2.0)))
-            top_pixel = (center[0], y)
             confidence = float(box.conf[0]) if box.conf is not None else 0.0
 
-            draw_detection(
-                result,
-                color_name,
-                (x, y, width, height),
-                center,
-                top_pixel,
-                confidence,
-            )
+            color_name = YOLO_FLOWER_LABELS.get(class_id)
+            if color_name is None:
+                continue
+            if y >= image_height * 0.5:
+                continue
+
+            center = (int(round(x + width / 2.0)), int(round(y + height / 2.0)))
+            top_pixel = (center[0], y)
             detections.append(
                 {
                     "color": color_name,
@@ -182,13 +274,36 @@ def detect_with_yolo(image):
                     "bbox": (x, y, width, height),
                     "center": center,
                     "top_pixel": top_pixel,
+                    "height_cm": estimate_height_cm(image.shape, top_pixel),
                 }
             )
 
-    detections.sort(key=lambda detection: detection["confidence"], reverse=True)
+    detections = apply_nms(detections)
+    dominant_label, dominant_count, heights_cm = dominant_summary(detections)
+    dominant_detections = [
+        detection
+        for detection in detections
+        if detection["color"] == dominant_label
+    ]
+
+    for detection in dominant_detections:
+        draw_detection(
+            result,
+            detection["color"],
+            detection["bbox"],
+            detection["center"],
+            detection["top_pixel"],
+            detection["confidence"],
+            color=(0, 255, 0),
+            thickness=3,
+        )
+
+    dominant_detections.sort(key=lambda detection: detection["bbox"][0])
     print(f"Using YOLO model: {MODEL_PATH}")
-    print(f"bug detected: {bug_detected}")
-    print_detections(detections)
+    print(f"dominant_label = {dominant_label}")
+    print(f"dominant_count = {dominant_count}")
+    print(f"heights_cm = {[round(height_cm, 1) for height_cm in heights_cm]}")
+    print_detections(dominant_detections)
     return result
 
 

@@ -3,7 +3,6 @@ from pathlib import Path
 
 import rclpy
 from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool
@@ -22,13 +21,6 @@ class FlowerDetection:
     confidence: float | None = None
 
 
-@dataclass
-class TrackedFlowerCenter:
-    x: float
-    y: float
-    color_label: str
-
-
 class FlowerDetectionNode(Node):
     """Detect Dahlia flowers and estimate their height from aligned depth."""
 
@@ -38,7 +30,6 @@ class FlowerDetectionNode(Node):
         2: "light_pink",
     }
     _YOLO_BUG_CLASS_ID = 3
-    _TRACKING_DISTANCE_PX = 80.0
 
     def __init__(self) -> None:
         super().__init__("flower_detection_node")
@@ -104,7 +95,6 @@ class FlowerDetectionNode(Node):
         self._latest_depth_m: np.ndarray | None = None
         self._principal_y_px: float | None = None
         self._yolo_model = self._load_yolo_model()
-        self._tracked_flower_centers: list[TrackedFlowerCenter] = []
         self._publisher = self.create_publisher(FlowerData, output_topic, 10)
         self._bug_detected_publisher = self.create_publisher(
             Bool,
@@ -185,12 +175,7 @@ class FlowerDetectionNode(Node):
             for detection in detections
         ]
 
-        if detections:
-            for detection, height_cm in zip(detections, height_by_detection):
-                msg = self._build_message(detection, height_cm, frame.shape)
-                self._publisher.publish(msg)
-        else:
-            self._publisher.publish(self._build_message(None, None, frame.shape))
+        self._publisher.publish(self._build_message(detections, height_by_detection))
 
         self._publish_debug_image(frame, detections, height_by_detection, image_msg)
 
@@ -228,6 +213,7 @@ class FlowerDetectionNode(Node):
         if not results:
             return [], False
 
+        image_height = frame.shape[0]
         detections: list[FlowerDetection] = []
         bug_detected = False
         boxes = results[0].boxes
@@ -249,6 +235,9 @@ class FlowerDetectionNode(Node):
             y = max(0, int(round(y_center - box_height / 2.0)))
             width = max(1, int(round(box_width)))
             height = max(1, int(round(box_height)))
+            if y >= image_height * 0.5:
+                continue
+
             confidence = float(box.conf[0]) if box.conf is not None else None
             top_pixel = (int(round(x_center)), y)
             detections.append(
@@ -261,52 +250,58 @@ class FlowerDetectionNode(Node):
                 )
             )
 
-        detections = sorted(
-            detections,
-            key=lambda detection: detection.confidence
-            if detection.confidence is not None
-            else detection.contour_area,
-            reverse=True,
-        )
-        self._update_tracked_flower_centers(detections)
-        return detections, bug_detected
+        return self._apply_nms(detections), bug_detected
 
     def _publish_bug_detected(self) -> None:
         msg = Bool()
         msg.data = True
         self._bug_detected_publisher.publish(msg)
 
-    def _update_tracked_flower_centers(
+    def _apply_nms(
         self,
         detections: list[FlowerDetection],
-    ) -> None:
-        for detection in detections:
-            x, y, width, height = detection.bbox
-            center_x = x + width / 2.0
-            center_y = y + height / 2.0
+    ) -> list[FlowerDetection]:
+        kept: list[FlowerDetection] = []
+        ordered = sorted(
+            detections,
+            key=lambda detection: detection.confidence
+            if detection.confidence is not None
+            else 0.0,
+            reverse=True,
+        )
+        for detection in ordered:
+            if all(
+                self._bbox_iou(detection.bbox, kept_detection.bbox) <= 0.4
+                for kept_detection in kept
+            ):
+                kept.append(detection)
+        return kept
 
-            matched_flower = None
-            for tracked_flower in self._tracked_flower_centers:
-                distance_px = float(
-                    np.hypot(center_x - tracked_flower.x, center_y - tracked_flower.y)
-                )
-                if distance_px <= self._TRACKING_DISTANCE_PX:
-                    matched_flower = tracked_flower
-                    break
+    def _bbox_iou(
+        self,
+        first: tuple[int, int, int, int],
+        second: tuple[int, int, int, int],
+    ) -> float:
+        first_x, first_y, first_width, first_height = first
+        second_x, second_y, second_width, second_height = second
+        first_x2 = first_x + first_width
+        first_y2 = first_y + first_height
+        second_x2 = second_x + second_width
+        second_y2 = second_y + second_height
 
-            if matched_flower is None:
-                self._tracked_flower_centers.append(
-                    TrackedFlowerCenter(center_x, center_y, detection.color_label)
-                )
-                self.get_logger().info(
-                    f"New {detection.color_label} flower tracked at "
-                    f"center=({center_x:.1f},{center_y:.1f}); "
-                    f"total_tracked={len(self._tracked_flower_centers)}"
-                )
-            else:
-                matched_flower.x = center_x
-                matched_flower.y = center_y
-                matched_flower.color_label = detection.color_label
+        intersection_x1 = max(first_x, second_x)
+        intersection_y1 = max(first_y, second_y)
+        intersection_x2 = min(first_x2, second_x2)
+        intersection_y2 = min(first_y2, second_y2)
+        intersection_width = max(0, intersection_x2 - intersection_x1)
+        intersection_height = max(0, intersection_y2 - intersection_y1)
+        intersection_area = intersection_width * intersection_height
+        first_area = first_width * first_height
+        second_area = second_width * second_height
+        union_area = first_area + second_area - intersection_area
+        if union_area <= 0:
+            return 0.0
+        return intersection_area / union_area
 
     def _image_msg_to_frame(
         self,
@@ -406,41 +401,63 @@ class FlowerDetectionNode(Node):
 
     def _build_message(
         self,
-        detection: FlowerDetection | None,
-        height_cm: float | None,
-        frame_shape: tuple[int, int, int],
+        detections: list[FlowerDetection],
+        heights_cm: list[float | None],
     ) -> FlowerData:
         msg = FlowerData()
 
-        if detection is None:
+        if not detections:
             msg.detected = False
-            msg.confidence = 0.0
-            msg.label = "none"
-            msg.position = Point()
+            msg.dominant_label = "none"
+            msg.dominant_count = 0
+            msg.dominant_confidence = 0.0
+            msg.heights_cm = []
             msg.message = "No Dahlia flower detected"
             return msg
 
-        msg.label = detection.color_label
-        x, y, width, height = detection.bbox
-        frame_height, frame_width = frame_shape[:2]
-        center_x = x + width / 2.0
-        center_y = y + height / 2.0
-        bbox_area = float(width * height)
-        frame_area = float(frame_width * frame_height)
-        height_value = height_cm if height_cm is not None else 0.0
+        detections_by_label: dict[str, list[FlowerDetection]] = {}
+        for detection in detections:
+            detections_by_label.setdefault(detection.color_label, []).append(detection)
+
+        dominant_label, dominant_detections = max(
+            detections_by_label.items(),
+            key=lambda item: (
+                len(item[1]),
+                self._average_confidence(item[1]),
+                item[0],
+            ),
+        )
+        ordered_heights = [
+            0.0 if height_cm is None else float(height_cm)
+            for detection, height_cm in sorted(
+                zip(detections, heights_cm),
+                key=lambda item: item[0].bbox[0],
+            )
+        ]
 
         msg.detected = True
-        if detection.confidence is not None:
-            msg.confidence = float(max(0.0, min(1.0, detection.confidence)))
-        else:
-            msg.confidence = min(1.0, bbox_area / frame_area * 20.0)
-        msg.position = Point(x=center_x, y=center_y, z=height_value)
+        msg.dominant_label = dominant_label
+        msg.dominant_count = len(dominant_detections)
+        msg.dominant_confidence = self._average_confidence(dominant_detections)
+        msg.heights_cm = ordered_heights
         msg.message = (
-            f"color={detection.color_label}; bbox=({x},{y},{width},{height}); "
-            f"top=({detection.top_pixel[0]},{detection.top_pixel[1]}); "
-            f"height={height_value:.1f}cm"
+            f"detected={len(detections)}; dominant={msg.dominant_label}; "
+            f"dominant_count={msg.dominant_count}; "
+            f"dominant_confidence={msg.dominant_confidence:.2f}; "
+            f"heights_cm={[round(height_cm, 1) for height_cm in ordered_heights]}"
         )
         return msg
+
+    def _average_confidence(self, detections: list[FlowerDetection]) -> float:
+        if not detections:
+            return 0.0
+        return float(
+            sum(
+                detection.confidence if detection.confidence is not None else 0.0
+                for detection in detections
+            )
+            / len(detections)
+        )
 
     def _publish_debug_image(
         self,
