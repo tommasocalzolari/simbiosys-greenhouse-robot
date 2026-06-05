@@ -11,7 +11,7 @@ MODEL_PATH = (
     / "simbiosys_perception"
     / "simbiosys_perception"
     / "models"
-    / "flower_model.pt"
+    / "flower_model (Copy).pt"
 )
 YOLO_FLOWER_LABELS = {
     0: "magenta",

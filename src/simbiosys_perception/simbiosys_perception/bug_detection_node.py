@@ -16,7 +16,7 @@ class BugDetectionNode(Node):
 
     def __init__(self) -> None:
         super().__init__("bug_detection_node")
-        default_model_path = "models/flower_model.pt"
+        default_model_path = "models/flower_model (Copy).pt"
         self.declare_parameter("camera_topic", "/gripper_camera/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("model_path", default_model_path)

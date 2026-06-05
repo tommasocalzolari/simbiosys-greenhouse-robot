@@ -11,7 +11,7 @@ MODEL_PATH = (
     / "simbiosys_perception"
     / "simbiosys_perception"
     / "models"
-    / "flower_model.pt"
+    / "flower_model (Copy).pt"
 )
 BUG_CLASS_ID = 3
 MAX_DISPLAY_WIDTH = 1200
