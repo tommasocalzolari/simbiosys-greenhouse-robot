@@ -33,9 +33,12 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "checkpoint_navigator_node = simbiosys_mapping.checkpoint_navigator_node:main",
             "mapping_status_node = simbiosys_mapping.mapping_status_node:main",
             "getmap_node = simbiosys_mapping.getmap_node:main",
             "initial_pose_node = simbiosys_mapping.initial_pose_node:main",
+            "map_annotation_node = simbiosys_mapping.map_annotation_node:main",
+            "map_post_processor_node = simbiosys_mapping.map_post_processor_node:main",
         ],
     },
 )
