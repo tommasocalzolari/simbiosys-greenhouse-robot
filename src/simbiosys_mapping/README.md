@@ -300,7 +300,7 @@ The annotation order is:
 The annotation markers are published on:
 
 ```text
-/map_annotations  
+/map_annotations
 ```
 
 Finish and save:

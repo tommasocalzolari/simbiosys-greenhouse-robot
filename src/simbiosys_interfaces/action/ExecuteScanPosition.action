@@ -1,0 +1,16 @@
+simbiosys_interfaces/ScanPosition scan_position
+string side
+float32 target_distance_m
+float32 hold_duration_sec
+bool dry_run
+---
+bool success
+bool aligned
+string message
+---
+string phase
+float32 progress
+float32 distance_error_m
+float32 yaw_error_rad
+float32 confidence
+string message
