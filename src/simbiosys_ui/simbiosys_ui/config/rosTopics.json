@@ -15,6 +15,8 @@
     "homePose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
     "mappingStatus": "simbiosys/mapping_status",
     "taskStatus": "simbiosys/task_status",
+    "scanProgress": "simbiosys/scan_progress",
+    "harvestStatus": "simbiosys/harvest_status",
     "setTaskMode": "simbiosys/set_robot_mode",
     "executeBehavior": "simbiosys/execute_behavior",
     "sendNamedArmPose": "simbiosys/send_named_arm_pose",

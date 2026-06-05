@@ -29,14 +29,16 @@ except ImportError:
 
 try:
     from simbiosys_interfaces.action import ExecuteBehavior
-    from simbiosys_interfaces.msg import BedObservation, BehaviorType, MappingStatus, PlantHealth, TaskStatus
+    from simbiosys_interfaces.msg import BedObservation, BehaviorType, HarvestStatus, MappingStatus, PlantHealth, ScanProgress, TaskStatus
     from simbiosys_interfaces.srv import SendNamedArmPose, SetRobotMode
 except ImportError:
     ExecuteBehavior = None
     BedObservation = None
     BehaviorType = None
+    HarvestStatus = None
     MappingStatus = None
     PlantHealth = None
+    ScanProgress = None
     TaskStatus = None
     SendNamedArmPose = None
     SetRobotMode = None
@@ -62,6 +64,8 @@ DEFAULT_CONFIG = {
         "homePose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
         "mappingStatus": "simbiosys/mapping_status",
         "taskStatus": "simbiosys/task_status",
+        "scanProgress": "simbiosys/scan_progress",
+        "harvestStatus": "simbiosys/harvest_status",
         "setTaskMode": "simbiosys/set_robot_mode",
         "executeBehavior": "simbiosys/execute_behavior",
         "sendNamedArmPose": "simbiosys/send_named_arm_pose",
@@ -1712,6 +1716,10 @@ class UiNode(Node):
             self._try_create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
         if TaskStatus is not None:
             self._try_create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
+        if ScanProgress is not None and self._topics.get("scanProgress"):
+            self._try_create_subscription(ScanProgress, self._topics["scanProgress"], self._on_scan_progress, 10)
+        if HarvestStatus is not None and self._topics.get("harvestStatus"):
+            self._try_create_subscription(HarvestStatus, self._topics["harvestStatus"], self._on_harvest_status, 10)
         if self._topics.get("artifactCandidates"):
             self.create_subscription(String, self._topics["artifactCandidates"], self._on_artifact_candidates, 10)
 
@@ -2648,6 +2656,59 @@ class UiNode(Node):
             "message": msg.message,
             "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+
+    def _on_scan_progress(self, msg) -> None:
+        self._upsert_behavior_bed(
+            msg.active_bed_id,
+            msg.message,
+            active_scan_position_id=getattr(msg, "active_scan_position_id", ""),
+            active_flower_id=getattr(msg, "active_flower_id", ""),
+            detection_status=getattr(msg, "detection_status", ""),
+            error=bool(getattr(msg, "error", False)),
+        )
+        latest_health = getattr(msg, "latest_plant_health", None)
+        if latest_health is not None and getattr(latest_health, "flower_id", ""):
+            self._on_typed_plant_health(latest_health)
+
+    def _on_harvest_status(self, msg) -> None:
+        self._upsert_behavior_bed(
+            msg.active_bed_id,
+            msg.message,
+            active_flower_id=getattr(msg, "active_flower_id", ""),
+            phase=getattr(msg, "phase", ""),
+            alignment_status=getattr(msg, "alignment_status", ""),
+            error=bool(getattr(msg, "error", False)),
+        )
+
+    def _upsert_behavior_bed(self, bed_id, message: str = "", **status) -> None:
+        bed_id = self._behavior_bed_key(bed_id)
+        if not bed_id:
+            return
+        bed = self._bed_observations.setdefault(
+            bed_id,
+            {
+                "bed_id": bed_id,
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": True,
+            },
+        )
+        bed["bed_id"] = bed_id
+        bed["available"] = True
+        bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        bed["source"] = "behavior"
+        if message:
+            bed["message"] = message
+        behavior_status = {key: value for key, value in status.items() if value not in ("", None)}
+        if behavior_status:
+            bed["behavior_status"] = behavior_status
+
+    def _behavior_bed_key(self, bed_id) -> str:
+        bed_id = str(bed_id or "").strip()
+        if ":" in bed_id:
+            bed_id = bed_id.split(":", 1)[0].strip()
+        return bed_id
 
     def _time_msg_to_iso(self, msg) -> str:
         seconds = int(msg.sec)
