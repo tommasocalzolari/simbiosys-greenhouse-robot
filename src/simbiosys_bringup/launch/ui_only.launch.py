@@ -5,9 +5,11 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    """Launch only operator-facing placeholder nodes."""
+    """Launch only operator-facing UI nodes."""
     image_topic = LaunchConfiguration("image_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    teleop_queue_depth = LaunchConfiguration("teleop_queue_depth")
+    camera_max_fps = LaunchConfiguration("camera_max_fps")
     web_host = LaunchConfiguration("web_host")
     web_port = LaunchConfiguration("web_port")
 
@@ -15,13 +17,23 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "image_topic",
-                default_value="/camera/color/image_raw",
+                default_value="/camera/image_raw",
                 description="Main RGB camera image topic from the MIRTE Master.",
             ),
             DeclareLaunchArgument(
                 "cmd_vel_topic",
                 default_value="/mirte_base_controller/cmd_vel",
                 description="Velocity topic exposed by the MIRTE base controller.",
+            ),
+            DeclareLaunchArgument(
+                "teleop_queue_depth",
+                default_value="1",
+                description="Queue depth for UI teleop Twist publishing.",
+            ),
+            DeclareLaunchArgument(
+                "camera_max_fps",
+                default_value="5.0",
+                description="Maximum UI camera stream frame rate.",
             ),
             DeclareLaunchArgument(
                 "web_host",
@@ -42,6 +54,8 @@ def generate_launch_description():
                     {
                         "image_topic": image_topic,
                         "cmd_vel_topic": cmd_vel_topic,
+                        "teleop_queue_depth": teleop_queue_depth,
+                        "camera_max_fps": camera_max_fps,
                         "web_host": web_host,
                         "web_port": web_port,
                     }

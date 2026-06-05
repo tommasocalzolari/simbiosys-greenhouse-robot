@@ -191,39 +191,36 @@ def make_artifact_candidates() -> dict[str, Any]:
 
 def make_mock_plant(
     bed_id: int,
-    side: str,
-    side_index: int,
+    bed_side: str,
+    lane: str,
+    plant_index: int,
     color: str,
-    health: str = "healthy",
-    growth_stage: str = "growing",
-    bug_detected: bool = False,
-    ready_for_harvest: bool = False,
     confidence: float = 0.9,
 ) -> dict[str, Any]:
     x_base = 1.0 + (bed_id - 1) * 2.5
-    x_offset = 0.18 * side_index
-    y_base = 2.0 if side == "left" else 4.8
-    height_cm = 15.0 + bed_id * 2.5 + side_index * 1.1
-    if ready_for_harvest:
-        height_cm += 10.0
+    x_offset = 0.32 if bed_side == "b" else 0.0
+    y_base = 2.0 if lane == "left" else 4.8
+    height_cm = 15.0 + bed_id * 2.5 + plant_index * 1.1 + (2.0 if bed_side == "b" else 0.0)
     return {
-        "flower_id": f"bed_{bed_id}_{side}_{side_index:02d}",
-        "side": side,
+        "flower_id": f"{bed_id}:{bed_side}:{lane}:{plant_index:02d}",
+        "bed_side": bed_side,
+        "lane": lane,
+        "side": lane,
         "height_cm": round(height_cm, 1),
         "color": color,
-        "health": health,
-        "growth_stage": growth_stage,
-        "bug_detected": bug_detected,
+        "health": "",
+        "growth_stage": "",
+        "bug_detected": False,
         "flower_detected": True,
-        "ready_for_harvest": ready_for_harvest,
+        "ready_for_harvest": False,
         "confidence": confidence,
-        "notes": f"side:{side}",
-        "position": (x_base + x_offset, y_base + side_index * 0.12, height_cm),
+        "notes": f"bed_side:{bed_side} lane:{lane}",
+        "position": (x_base + x_offset + plant_index * 0.08, y_base + plant_index * 0.12, height_cm),
     }
 
 
 def count_colors(plants: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"magenta": 0, "light_pink": 0, "white": 0}
+    counts = {"magenta": 0, "light_pink": 0, "white": 0, "yellow": 0, "red": 0}
     for plant in plants:
         color = plant.get("color")
         if color in counts:
@@ -233,88 +230,89 @@ def count_colors(plants: list[dict[str, Any]]) -> dict[str, int]:
 
 def make_mock_perception_beds() -> list[dict[str, Any]]:
     """Realistic perception and behavior-shaped data for UI validation."""
-    color_cycle = ["magenta", "light_pink", "white"]
     bed_specs = [
         {
             "bed_id": 1,
             "co2_ppm": 620,
             "humidity_percent": 62,
-            "top": 5,
-            "bottom": 4,
-            "health": "healthy",
-            "stage": "growing",
-            "bugs": set(),
-            "ready": set(),
+            "bugs_detected": False,
+            "compartments": [
+                {"bed_side": "a", "lane": "left", "color": "magenta", "count": 4},
+                {"bed_side": "a", "lane": "right", "color": "magenta", "count": 3},
+                {"bed_side": "b", "lane": "left", "color": "white", "count": 2},
+                {"bed_side": "b", "lane": "right", "color": "white", "count": 4},
+            ],
         },
         {
             "bed_id": 2,
             "co2_ppm": 585,
             "humidity_percent": 82,
-            "top": 4,
-            "bottom": 3,
-            "health": "warning",
-            "stage": "growing",
-            "bugs": {("left", 1), ("right", 2)},
-            "ready": set(),
+            "bugs_detected": True,
+            "compartments": [
+                {"bed_side": "a", "lane": "left", "color": "light_pink", "count": 3},
+                {"bed_side": "a", "lane": "right", "color": "light_pink", "count": 4},
+                {"bed_side": "b", "lane": "left", "color": "magenta", "count": 2},
+                {"bed_side": "b", "lane": "right", "color": "magenta", "count": 2},
+            ],
         },
         {
             "bed_id": 3,
             "co2_ppm": 1320,
             "humidity_percent": 58,
-            "top": 1,
-            "bottom": 0,
-            "health": "unknown",
-            "stage": "growing",
-            "bugs": set(),
-            "ready": set(),
+            "bugs_detected": False,
+            "compartments": [
+                {"bed_side": "a", "lane": "left", "color": "white", "count": 1},
+                {"bed_side": "a", "lane": "right", "color": "white", "count": 0},
+                {"bed_side": "b", "lane": "left", "color": "light_pink", "count": 1},
+                {"bed_side": "b", "lane": "right", "color": "light_pink", "count": 0},
+            ],
         },
         {
             "bed_id": 4,
             "co2_ppm": 2150,
             "humidity_percent": 28,
-            "top": 6,
-            "bottom": 5,
-            "health": "healthy",
-            "stage": "mature",
-            "bugs": set(),
-            "ready": {
-                ("left", 1),
-                ("left", 2),
-                ("left", 3),
-                ("right", 1),
-                ("right", 2),
-                ("right", 3),
-            },
+            "bugs_detected": False,
+            "compartments": [
+                {"bed_side": "a", "lane": "left", "color": "yellow", "count": 6},
+                {"bed_side": "a", "lane": "right", "color": "yellow", "count": 5},
+                {"bed_side": "b", "lane": "left", "color": "red", "count": 5},
+                {"bed_side": "b", "lane": "right", "color": "red", "count": 6},
+            ],
         },
     ]
 
     beds = []
     for spec in bed_specs:
         plants = []
-        for side, count in (("left", spec["top"]), ("right", spec["bottom"])):
-            for index in range(1, count + 1):
-                bug_detected = (side, index) in spec["bugs"]
-                ready = (side, index) in spec["ready"]
-                health = "critical" if bug_detected else spec["health"]
+        compartments = []
+        for compartment in spec["compartments"]:
+            compartment_plants = []
+            for index in range(1, compartment["count"] + 1):
                 plants.append(
                     make_mock_plant(
                         bed_id=spec["bed_id"],
-                        side=side,
-                        side_index=index,
-                        color=color_cycle[(index + spec["bed_id"]) % len(color_cycle)],
-                        health=health,
-                        growth_stage="mature" if ready else spec["stage"],
-                        bug_detected=bug_detected,
-                        ready_for_harvest=ready,
+                        bed_side=compartment["bed_side"],
+                        lane=compartment["lane"],
+                        plant_index=index,
+                        color=compartment["color"],
                         confidence=max(0.55, 0.96 - index * 0.025),
                     )
                 )
+                compartment_plants.append(plants[-1])
+            compartments.append(
+                {
+                    **compartment,
+                    "heights_cm": [plant["height_cm"] for plant in compartment_plants],
+                }
+            )
         beds.append(
             {
                 "bed_id": spec["bed_id"],
                 "co2_ppm": spec["co2_ppm"],
                 "humidity_percent": spec["humidity_percent"],
+                "bugs_detected": spec["bugs_detected"],
                 "flower_counts": count_colors(plants),
+                "compartments": compartments,
                 "plants": plants,
             }
         )
@@ -589,15 +587,37 @@ class UiTestDataPublisher(Node):
                     "co2_ppm": bed["co2_ppm"],
                     "humidity_percent": bed["humidity_percent"],
                     "flower_counts": flower_counts,
-                    "side_counts": {
-                        "left": sum(1 for plant in bed["plants"] if plant["side"] == "left"),
-                        "right": sum(1 for plant in bed["plants"] if plant["side"] == "right"),
+                    "compartment_counts": {
+                        side: {
+                            lane: sum(
+                                1
+                                for plant in bed["plants"]
+                                if plant["bed_side"] == side and plant["lane"] == lane
+                            )
+                            for lane in ("left", "right")
+                        }
+                        for side in ("a", "b")
                     },
-                    "bugs_detected": any(plant["bug_detected"] for plant in bed["plants"]),
+                    "bugs_detected": bed["bugs_detected"],
                 },
                 separators=(",", ":"),
             )
             self._bed_environment_pub.publish(environment_message)
+
+            for compartment in bed["compartments"]:
+                compartment_message = String()
+                compartment_message.data = json.dumps(
+                    {
+                        "bed_id": str(bed_id),
+                        "side": compartment["bed_side"],
+                        "section": compartment["lane"],
+                        "color": compartment["color"],
+                        "heights_cm": compartment["heights_cm"],
+                        "timestamp": iso_now(),
+                    },
+                    separators=(",", ":"),
+                )
+                self._plant_health_json_pub.publish(compartment_message)
 
             for plant in bed["plants"]:
                 point = self._point_from_plant(plant)
@@ -614,28 +634,6 @@ class UiTestDataPublisher(Node):
 
                 plant_message = self._make_plant_health(bed_id, plant, ros_scan_time)
                 self._plant_health_pub.publish(plant_message)
-
-                plant_json_message = String()
-                plant_json_message.data = json.dumps(
-                    {
-                        "flower_id": plant["flower_id"],
-                        "bed_id": str(bed_id),
-                        "side": plant["side"],
-                        "height_cm": plant["height_cm"],
-                        "color": plant["color"],
-                        "health": plant["health"],
-                        "growth_stage": plant["growth_stage"],
-                        "bug_detected": plant["bug_detected"],
-                        "flower_detected": plant["flower_detected"],
-                        "ready_for_harvest": plant["ready_for_harvest"],
-                        "confidence": plant["confidence"],
-                        "last_scan_time": iso_now(),
-                        "notes": plant["notes"],
-                        "position": {"x": point.x, "y": point.y, "z": point.z},
-                    },
-                    separators=(",", ":"),
-                )
-                self._plant_health_json_pub.publish(plant_json_message)
 
         report_message = String()
         report_message.data = json.dumps(

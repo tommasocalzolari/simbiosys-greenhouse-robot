@@ -174,7 +174,7 @@ INDEX_HTML = """<!doctype html>
       color: #78847e;
       background: #141a18;
     }
-    button:active:not(:disabled), button.active {
+    button:active:not(:disabled):not(.plant-dot), button.active:not(.plant-dot) {
       background: var(--green);
       border-color: var(--green);
       color: #07110b;
@@ -250,6 +250,11 @@ INDEX_HTML = """<!doctype html>
     .bed-card.status-warning { border-color: #e1b94b; }
     .bed-card.status-danger { border-color: #e2685d; }
     .bed-card.unavailable { border-color: #59615d; }
+    .bed-update-age {
+      margin: -2px 0 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
     .bed-metrics {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -261,24 +266,51 @@ INDEX_HTML = """<!doctype html>
       font-size: 0.85rem;
     }
     .bed-plot {
-      min-height: 150px;
+      min-height: 210px;
       border: 1px solid #34433d;
       border-radius: 6px;
       background: #101815;
       display: grid;
-      grid-template-rows: repeat(2, minmax(58px, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: repeat(2, minmax(90px, 1fr));
       gap: 8px;
       padding: 10px;
+    }
+    .bed-compartment {
+      border: 1px solid #34433d;
+      border-radius: 6px;
+      padding: 8px;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 8px;
+      min-width: 0;
+      background: #121b18;
+    }
+    .bed-compartment-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .bed-compartment-label strong {
+      display: inline;
+      color: var(--text);
+      font-size: 0.82rem;
+    }
+    .compartment-empty {
+      color: #78847e;
+      font-size: 0.78rem;
+      align-self: center;
     }
     .bed-row {
       display: flex;
       align-items: center;
+      align-content: center;
+      flex-wrap: wrap;
       gap: 6px;
       min-width: 0;
-    }
-    .bed-row + .bed-row {
-      border-top: 1px dashed #34433d;
-      padding-top: 8px;
     }
     .plant-dot {
       flex: 0 0 44px;
@@ -286,7 +318,7 @@ INDEX_HTML = """<!doctype html>
       height: 44px;
       aspect-ratio: 1;
       padding: 0;
-      border: 5px solid #56c271;
+      border: 3px solid #d8e0dc;
       border-radius: 50%;
       cursor: pointer;
       appearance: none;
@@ -296,10 +328,10 @@ INDEX_HTML = """<!doctype html>
       font-size: 0.82rem;
       font-weight: 800;
       line-height: 1;
-      box-shadow: 0 0 0 2px #0c1110, 0 0 10px rgba(86, 194, 113, 0.35);
+      box-shadow: 0 0 0 2px #0c1110;
+      touch-action: manipulation;
     }
-    .plant-dot.status-warning { border-color: #e1b94b; }
-    .plant-dot.status-danger { border-color: #e2685d; }
+    .plant-dot:active, .plant-dot.pressed { border-color: #edf5ef; }
     .plant-dot.selected { outline: 2px solid #edf5ef; outline-offset: 3px; }
     .plant-detail {
       border-top: 1px solid var(--line);
@@ -972,6 +1004,80 @@ INDEX_HTML = """<!doctype html>
       });
       state.renderWarnings = warnings;
     }
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+    function yawDegrees(yaw) {
+      if (!Number.isFinite(yaw)) return "";
+      let degrees = yaw * 180 / Math.PI;
+      while (degrees > 180) degrees -= 360;
+      while (degrees <= -180) degrees += 360;
+      return `${Math.round(degrees)}deg`;
+    }
+    function drawRobotMarker(ctx, map, canvas, robotPose) {
+      if (!robotPose || !Number.isFinite(robotPose.x) || !Number.isFinite(robotPose.y) || !map.resolution) return;
+      const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
+      const pixelsPerMeter = mapToCanvas(map, canvas).cell / map.resolution;
+      const length = clamp(0.58 * pixelsPerMeter, 20, 34);
+      const width = clamp(0.42 * pixelsPerMeter, 14, 24);
+      const heading = Number.isFinite(robotPose.yaw) ? robotPose.yaw : 0;
+
+      ctx.save();
+      ctx.translate(robot.x, robot.y);
+      ctx.rotate(-heading);
+      ctx.fillStyle = "#66a8d9";
+      ctx.strokeStyle = "#eaf5fb";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(length * 0.52, 0);
+      ctx.lineTo(length * 0.18, -width * 0.55);
+      ctx.lineTo(-length * 0.48, -width * 0.55);
+      ctx.lineTo(-length * 0.58, 0);
+      ctx.lineTo(-length * 0.48, width * 0.55);
+      ctx.lineTo(length * 0.18, width * 0.55);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#0a0d0c";
+      ctx.fillRect(-length * 0.28, -width * 0.72, length * 0.16, width * 0.2);
+      ctx.fillRect(-length * 0.28, width * 0.52, length * 0.16, width * 0.2);
+      ctx.fillRect(length * 0.12, -width * 0.72, length * 0.16, width * 0.2);
+      ctx.fillRect(length * 0.12, width * 0.52, length * 0.16, width * 0.2);
+
+      ctx.strokeStyle = "#07110b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-length * 0.2, 0);
+      ctx.lineTo(length * 0.34, 0);
+      ctx.stroke();
+      ctx.restore();
+
+      const label = [
+        `Robot ${robotPose.x.toFixed(2)}, ${robotPose.y.toFixed(2)}`,
+        yawDegrees(robotPose.yaw),
+        robotPose.source || "",
+      ].filter(Boolean).join(" | ");
+      ctx.save();
+      ctx.font = "12px sans-serif";
+      const textWidth = ctx.measureText(label).width;
+      const labelX = clamp(robot.x + 12, 4, canvas.width - textWidth - 12);
+      const labelY = clamp(robot.y - 20, 18, canvas.height - 8);
+      ctx.fillStyle = "rgba(10, 17, 14, 0.82)";
+      ctx.strokeStyle = "#66a8d9";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(labelX - 6, labelY - 14, textWidth + 12, 20, 5);
+      } else {
+        ctx.rect(labelX - 6, labelY - 14, textWidth + 12, 20);
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#eaf5fb";
+      ctx.fillText(label, labelX, labelY);
+      ctx.restore();
+    }
     function drawOccupancyGrid(canvasId, placeholderId, map, robotPose, showRobot, selectedTarget, navPlan) {
       const canvas = document.getElementById(canvasId);
       const placeholder = document.getElementById(placeholderId);
@@ -1017,19 +1123,7 @@ INDEX_HTML = """<!doctype html>
         ctx.restore();
       }
       if (showRobot && robotPose && Number.isFinite(robotPose.x) && map.resolution) {
-        const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
-        ctx.fillStyle = "#66a8d9";
-        ctx.beginPath();
-        ctx.arc(robot.x, robot.y, 8, 0, Math.PI * 2);
-        ctx.fill();
-        if (Number.isFinite(robotPose.yaw)) {
-          ctx.strokeStyle = "#66a8d9";
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.moveTo(robot.x, robot.y);
-          ctx.lineTo(robot.x + Math.cos(robotPose.yaw) * 18, robot.y - Math.sin(robotPose.yaw) * 18);
-          ctx.stroke();
-        }
+        drawRobotMarker(ctx, map, canvas, robotPose);
       }
       drawCandidateOverlays(ctx, map, canvas);
     }
@@ -1110,6 +1204,14 @@ INDEX_HTML = """<!doctype html>
       const days = Math.round(hours / 24);
       return `${days} ${days === 1 ? "day" : "days"} ago`;
     }
+    function latestPlantUpdateAge(plants) {
+      const latest = (plants || []).reduce((latestSeen, plant) => {
+        const parsed = Date.parse(plant.last_scan_time || "");
+        if (!Number.isFinite(parsed)) return latestSeen;
+        return Math.max(latestSeen, parsed);
+      }, 0);
+      return latest ? timeSince(new Date(latest).toISOString()) : "no flower update yet";
+    }
     function mapAgeText(map) {
       if (!map || !map.receivedAt) return "Last SLAM map: not received yet";
       const parsed = Date.parse(map.receivedAt);
@@ -1144,26 +1246,38 @@ INDEX_HTML = """<!doctype html>
       if (warnings === 1) return "warning";
       return bed.available ? "ok" : "unavailable";
     }
-    function plantSeverity(plant) {
-      if (plant.bug_detected) return "danger";
-      const health = String(plant.health || "").toLowerCase();
-      if (health === "critical" || health === "unhealthy") return "danger";
-      if (health === "warning" || health === "unknown") return "warning";
-      return "ok";
-    }
     function plantColor(plant) {
       const color = String(plant.color || "").toLowerCase();
       if (color === "magenta") return "#d657c9";
       if (color === "light_pink") return "#f0a9cc";
+      if (color === "pink") return "#f0a9cc";
       if (color === "white") return "#edf5ef";
+      if (color === "yellow") return "#e1d35e";
+      if (color === "red") return "#e2685d";
+      if (color === "blue") return "#66a8d9";
       return "#7eb7e6";
     }
-    function plantSide(plant, index) {
+    function plantBedSide(plant) {
+      const direct = String(plant.bed_side || plant.bedSide || plant.side_letter || plant.zijkant || "").toLowerCase();
+      if (direct === "a" || direct === "b") return direct;
+      const side = String(plant.side || "").toLowerCase();
+      if (side === "a" || side === "b") return side;
+      const notes = String(plant.notes || "").toLowerCase();
+      const match = notes.match(/(?:bed[_ -]?side|zijkant|side)[:=](a|b)\b/);
+      return match ? match[1] : "a";
+    }
+    function plantLane(plant, index) {
+      const direct = String(plant.lane || plant.compartment || plant.section || plant.vak || plant.position_side || "").toLowerCase();
+      if (direct === "left" || direct === "right") return direct;
       const side = String(plant.side || "").toLowerCase();
       if (side === "left" || side === "right") return side;
-      const x = plant.position && Number(plant.position.x);
-      if (Number.isFinite(x)) return x < 0.5 ? "left" : "right";
+      const notes = String(plant.notes || "").toLowerCase();
+      const match = notes.match(/(?:lane|section|vak|position|side)[:=](left|right)\b/);
+      if (match) return match[1];
       return index % 2 === 0 ? "left" : "right";
+    }
+    function compartmentLabel(section) {
+      return `${section.bedSide.toUpperCase()} ${section.lane}`;
     }
     function plantDetailMetric(label, value) {
       const item = document.createElement("p");
@@ -1176,7 +1290,8 @@ INDEX_HTML = """<!doctype html>
     function visiblePlantNotes(plant) {
       return String(plant.notes || "")
         .replace(/flower detected:\\s*[\\w_-]+/gi, "")
-        .replace(/\\s*side[:=](left|right)\\b/gi, "")
+        .replace(/\\s*side[:=](left|right|a|b)\\b/gi, "")
+        .replace(/\\s*(bed[_ -]?side|zijkant|lane|section|vak|position)[:=](left|right|a|b)\\b/gi, "")
         .trim();
     }
     function renderPlantDetail(plant, label) {
@@ -1187,11 +1302,9 @@ INDEX_HTML = """<!doctype html>
       const grid = document.createElement("div");
       grid.className = "plant-detail-grid";
       grid.appendChild(plantDetailMetric("color", plant.color));
-      grid.appendChild(plantDetailMetric("confidence", plant.confidence == null ? null : `${Math.round(Number(plant.confidence) * 100)}%`));
-      grid.appendChild(plantDetailMetric("stage", plant.growth_stage));
-      grid.appendChild(plantDetailMetric("growth", plant.ready_for_harvest == null ? null : (plant.ready_for_harvest ? "ready" : "still growing")));
-      grid.appendChild(plantDetailMetric("health", plant.health));
+      grid.appendChild(plantDetailMetric("height", plant.height_cm == null ? null : `${plant.height_cm} cm`));
       grid.appendChild(plantDetailMetric("bed", plant.bed_id));
+      grid.appendChild(plantDetailMetric("vak", `${plantBedSide(plant).toUpperCase()} ${plantLane(plant, 0)}`));
       detail.appendChild(name);
       detail.appendChild(grid);
       const visibleNotes = visiblePlantNotes(plant);
@@ -1203,34 +1316,72 @@ INDEX_HTML = """<!doctype html>
       }
       return detail;
     }
+    function bedCompartments(bedPlants) {
+      const sections = [
+        {bedSide: "a", lane: "left", plants: []},
+        {bedSide: "a", lane: "right", plants: []},
+        {bedSide: "b", lane: "left", plants: []},
+        {bedSide: "b", lane: "right", plants: []},
+      ];
+      const lookup = new Map(sections.map((section) => [`${section.bedSide}:${section.lane}`, section]));
+      (bedPlants || []).forEach((plant, index) => {
+        const key = `${plantBedSide(plant)}:${plantLane(plant, index)}`;
+        const section = lookup.get(key) || sections[0];
+        section.plants.push(plant);
+      });
+      return sections;
+    }
     function orderedBedPlants(bed) {
-      const bedPlants = Array.isArray(bed.plants) ? bed.plants : [];
-      const topPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "left");
-      const bottomPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "right");
-      return [...topPlants, ...bottomPlants];
+      return bedCompartments(Array.isArray(bed.plants) ? bed.plants : [])
+        .flatMap((section) => section.plants);
     }
     function plantDisplayLabel(bed, plant) {
       const orderedPlants = orderedBedPlants(bed);
       const index = Math.max(0, orderedPlants.findIndex((candidate) => candidate.flower_id === plant.flower_id));
       return `${bed.bed_id}${String.fromCharCode(97 + (index % 26))}`;
     }
-    function renderPlantRow(plot, plants, bed, data) {
+    function renderPlantRow(container, plants, bed, data) {
       const row = document.createElement("div");
       row.className = "bed-row";
       plants.slice(0, 10).forEach((plant) => {
         const dot = document.createElement("button");
         dot.type = "button";
-        dot.className = `plant-dot status-${plantSeverity(plant)} ${state.selectedPlantId === plant.flower_id ? "selected" : ""}`;
+        dot.className = `plant-dot ${state.selectedPlantId === plant.flower_id ? "selected" : ""}`;
         dot.style.background = plantColor(plant);
-        dot.title = plant.flower_id || "plant";
+        dot.title = plant.height_cm == null ? (plant.flower_id || "plant") : `${plant.flower_id || "plant"} - ${plant.height_cm} cm`;
         dot.textContent = plantDisplayLabel(bed, plant);
+        dot.addEventListener("pointerdown", () => dot.classList.add("pressed"));
+        dot.addEventListener("pointerup", () => dot.classList.remove("pressed"));
+        dot.addEventListener("pointercancel", () => dot.classList.remove("pressed"));
+        dot.addEventListener("pointerleave", () => dot.classList.remove("pressed"));
         dot.addEventListener("click", () => {
           state.selectedPlantId = plant.flower_id;
           renderBeds(data);
         });
         row.appendChild(dot);
       });
-      plot.appendChild(row);
+      container.appendChild(row);
+    }
+    function renderCompartment(plot, section, bed, data) {
+      const item = document.createElement("div");
+      item.className = "bed-compartment";
+      const colorPlant = section.plants.find((plant) => plant.color);
+      const colorText = colorPlant ? colorPlant.color : "no flowers";
+      item.innerHTML = `
+        <div class="bed-compartment-label">
+          <strong>${compartmentLabel(section)}</strong>
+          <span>${colorText}</span>
+        </div>
+      `;
+      if (section.plants.length) {
+        renderPlantRow(item, section.plants, bed, data);
+      } else {
+        const empty = document.createElement("p");
+        empty.className = "compartment-empty";
+        empty.textContent = "empty";
+        item.appendChild(empty);
+      }
+      plot.appendChild(item);
     }
     function selectedPlantRecord(data) {
       for (const bed of data.beds || []) {
@@ -1275,6 +1426,7 @@ INDEX_HTML = """<!doctype html>
             <h3>Bed ${bed.bed_id}</h3>
             <button class="inspect-bed" data-bed-id="${bed.bed_id}">Inspect Bed</button>
           </div>
+          <p class="bed-update-age">Flower update: ${latestPlantUpdateAge(bedPlants)}</p>
           <div class="bed-metrics">
             <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
             <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
@@ -1284,10 +1436,7 @@ INDEX_HTML = """<!doctype html>
           </div>
         `;
         const plot = card.querySelector(".bed-plot");
-        const topPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "left");
-        const bottomPlants = bedPlants.filter((plant, index) => plantSide(plant, index) === "right");
-        renderPlantRow(plot, topPlants, bed, data);
-        renderPlantRow(plot, bottomPlants, bed, data);
+        bedCompartments(bedPlants).forEach((section) => renderCompartment(plot, section, bed, data));
         const inspectButton = card.querySelector(".inspect-bed");
         inspectButton.disabled = state.safetyPaused || !data.behaviorAvailable;
         inspectButton.addEventListener("click", async () => {
@@ -1672,6 +1821,8 @@ class UiNode(Node):
         self._nav_plan = None
         self._last_status_map_sent_at = 0.0
         self._robot_pose = None
+        self._odom_pose = None
+        self._amcl_pose = None
         self._home_pose = self._normalized_pose(self._topics.get("homePose") or {})
         self._active_nav_goal_handle = None
         self._active_nav_label = ""
@@ -1974,7 +2125,7 @@ class UiNode(Node):
             "beds": self._bed_payload(),
             "report": self._external_report or self._computed_report(),
             "map": self._status_map_payload(),
-            "robotPose": self._robot_pose,
+            "robotPose": self._preferred_robot_pose(),
             "navPlan": copy.deepcopy(self._nav_plan),
             "batteryPercent": self._battery_percent,
             "bedObservations": copy.deepcopy(self._bed_observations),
@@ -2518,11 +2669,37 @@ class UiNode(Node):
 
     def _on_odom(self, msg: Odometry) -> None:
         pose = msg.pose.pose
-        self._robot_pose = {"x": pose.position.x, "y": pose.position.y, "yaw": yaw_from_quaternion(pose.orientation)}
+        self._odom_pose = {
+            "x": pose.position.x,
+            "y": pose.position.y,
+            "yaw": yaw_from_quaternion(pose.orientation),
+            "source": "odom",
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "_receivedMonotonic": time.monotonic(),
+        }
 
     def _on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         pose = msg.pose.pose
-        self._robot_pose = {"x": pose.position.x, "y": pose.position.y, "yaw": yaw_from_quaternion(pose.orientation)}
+        self._amcl_pose = {
+            "x": pose.position.x,
+            "y": pose.position.y,
+            "yaw": yaw_from_quaternion(pose.orientation),
+            "source": "amcl",
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "_receivedMonotonic": time.monotonic(),
+        }
+
+    def _preferred_robot_pose(self):
+        if self._amcl_pose and time.monotonic() - self._amcl_pose.get("_receivedMonotonic", 0.0) < 5.0:
+            return self._public_robot_pose(self._amcl_pose)
+        if self._odom_pose:
+            return self._public_robot_pose(self._odom_pose)
+        return None
+
+    def _public_robot_pose(self, pose: dict) -> dict:
+        public_pose = copy.deepcopy(pose)
+        public_pose.pop("_receivedMonotonic", None)
+        return public_pose
 
     def _on_plant_health(self, msg: String) -> None:
         try:
@@ -2532,7 +2709,10 @@ class UiNode(Node):
             return
         flower_id = str(payload.get("flower_id", "")).strip()
         if not flower_id:
-            self.get_logger().warn("Ignoring plant health JSON without flower_id")
+            if self._update_compartment_payload(payload):
+                self._external_report = None
+                return
+            self.get_logger().warn("Ignoring plant health JSON without flower_id or compartment data")
             return
         self._update_plant_from_payload(flower_id, payload)
         self._external_report = None
@@ -2719,12 +2899,124 @@ class UiNode(Node):
 
     def _update_plant_from_payload(self, flower_id: str, payload: dict) -> None:
         plant = self._plants.setdefault(flower_id, {"flower_id": flower_id})
-        for key in ("bed_id", "side", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
+        for key in ("bed_id", "side", "bed_side", "lane", "section", "compartment", "vak", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
             if key in payload:
                 plant[key] = payload[key]
         for key in ("bug_detected", "flower_detected", "ready_for_harvest"):
             if key in payload:
                 plant[key] = bool(payload[key])
+
+    def _update_compartment_payload(self, payload: dict) -> bool:
+        section_payloads = self._compartment_payloads(payload)
+        updated = False
+        for section in section_payloads:
+            if self._update_compartment_section(section):
+                updated = True
+        return updated
+
+    def _compartment_payloads(self, payload: dict) -> list[dict]:
+        bed_id = payload.get("bed_id")
+        sections = payload.get("sections", payload.get("compartments", payload.get("vakken")))
+        if isinstance(sections, list):
+            return [dict({"bed_id": bed_id}, **section) for section in sections if isinstance(section, dict)]
+
+        bed_side = self._normalized_bed_side(payload)
+        nested = []
+        if bed_side:
+            for lane in ("left", "right"):
+                value = payload.get(lane)
+                if isinstance(value, dict):
+                    nested.append(dict({"bed_id": bed_id, "bed_side": bed_side, "lane": lane}, **value))
+        if nested:
+            return nested
+        return [payload]
+
+    def _update_compartment_section(self, payload: dict) -> bool:
+        bed_id = str(payload.get("bed_id", "")).strip()
+        bed_side = self._normalized_bed_side(payload)
+        lane = self._normalized_lane(payload)
+        if not bed_id or not bed_side or not lane:
+            return False
+
+        heights = self._section_heights(payload)
+        if heights is None:
+            return False
+
+        color = str(payload.get("color", payload.get("flower_color", payload.get("kleur", "")))).strip()
+        last_scan_time = str(payload.get("last_scan_time", payload.get("timestamp", ""))).strip()
+        if not last_scan_time:
+            last_scan_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        prefix = f"{bed_id}:{bed_side}:{lane}:"
+        for flower_id in [key for key in self._plants if key.startswith(prefix)]:
+            self._plants.pop(flower_id, None)
+
+        bed = self._bed_observations.setdefault(
+            bed_id,
+            {
+                "bed_id": bed_id,
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": True,
+            },
+        )
+        bed["bed_id"] = bed_id
+        bed["available"] = True
+        bed["last_seen"] = last_scan_time
+
+        for index, height in enumerate(heights, start=1):
+            flower_id = f"{prefix}{index:02d}"
+            self._plants[flower_id] = {
+                "flower_id": flower_id,
+                "bed_id": bed_id,
+                "bed_side": bed_side,
+                "lane": lane,
+                "side": lane,
+                "height_cm": height,
+                "color": color,
+                "last_scan_time": last_scan_time,
+                "notes": f"bed_side:{bed_side} lane:{lane}",
+            }
+        return True
+
+    def _normalized_bed_side(self, payload: dict) -> str:
+        for key in ("bed_side", "bedSide", "side_letter", "zijkant"):
+            value = str(payload.get(key, "")).strip().lower()
+            if value in ("a", "b"):
+                return value
+        side = str(payload.get("side", "")).strip().lower()
+        return side if side in ("a", "b") else ""
+
+    def _normalized_lane(self, payload: dict) -> str:
+        for key in ("lane", "section", "compartment", "vak", "position", "position_side"):
+            value = str(payload.get(key, "")).strip().lower()
+            if value in ("left", "right"):
+                return value
+        side = str(payload.get("side", "")).strip().lower()
+        return side if side in ("left", "right") else ""
+
+    def _section_heights(self, payload: dict) -> list[float] | None:
+        raw = payload.get("heights_cm", payload.get("heights", payload.get("plant_heights_cm", payload.get("flower_heights_cm"))))
+        if raw is None and "height_cm" in payload:
+            raw = [payload["height_cm"]]
+        if raw is None and isinstance(payload.get("flowers"), list):
+            raw = [
+                flower.get("height_cm", flower.get("height"))
+                for flower in payload["flowers"]
+                if isinstance(flower, dict)
+            ]
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            raw = [raw]
+        heights = []
+        for value in raw:
+            try:
+                heights.append(round(float(value), 1))
+            except (TypeError, ValueError):
+                continue
+        return heights
 
     def _side_from_notes(self, notes: str) -> str:
         lowered = str(notes or "").lower()
@@ -2814,13 +3106,13 @@ class UiNode(Node):
             ]
             bed["plants"] = bed_plants
             if bed_plants:
-                bed["bugs_detected"] = any(bool(plant.get("bug_detected")) for plant in bed_plants)
-                side_counts = {"left": 0, "right": 0}
-                for index, plant in enumerate(bed_plants):
-                    side = str(plant.get("side") or ("left" if index % 2 == 0 else "right")).lower()
-                    if side in side_counts:
-                        side_counts[side] += 1
-                bed["side_counts"] = side_counts
+                compartment_counts = {"a": {"left": 0, "right": 0}, "b": {"left": 0, "right": 0}}
+                for plant in bed_plants:
+                    bed_side = str(plant.get("bed_side") or "a").lower()
+                    lane = str(plant.get("lane") or plant.get("side") or "left").lower()
+                    if bed_side in compartment_counts and lane in compartment_counts[bed_side]:
+                        compartment_counts[bed_side][lane] += 1
+                bed["compartment_counts"] = compartment_counts
         return sorted(beds, key=lambda bed: str(bed.get("bed_id", "")))
 
     def _computed_report(self) -> dict:
