@@ -28,6 +28,7 @@ def generate_launch_description():
         ]
     )
     params_file = LaunchConfiguration("params_file")
+    map_yaml = LaunchConfiguration("map")
     localization_params_file = PathJoinSubstitution(
         [
             FindPackageShare("simbiosys_mapping"),
@@ -121,7 +122,7 @@ def generate_launch_description():
             localization_params_file,
             {
                 "use_sim_time": use_sim_time,
-                "yaml_filename": "maps/mirte_map.yaml",
+                "yaml_filename": map_yaml,
             },
         ],
     )
@@ -254,6 +255,11 @@ def generate_launch_description():
                         "nav2_navigation.yaml",
                     ]
                 ),
+            ),
+            DeclareLaunchArgument(
+                "map",
+                default_value="maps/mirte_map.yaml",
+                description="Saved map YAML file used by Nav2 map_server.",
             ),
             DeclareLaunchArgument("autostart", default_value="true"),
             DeclareLaunchArgument("log_level", default_value="info"),
