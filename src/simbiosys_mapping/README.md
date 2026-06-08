@@ -151,10 +151,12 @@ the older map-cleaning tool that can overwrite map files.
 ## Simple Navigation
 
 Simple navigation starts the map server, AMCL localization, Nav2 planner,
-controller, behavior tree navigator, and RViz. It always loads:
+controller, behavior tree navigator, and RViz. The default map depends on the
+selected mode:
 
 ```text
-maps/mirte_map.yaml
+simulation:=false  maps/mirte_map.yaml
+simulation:=true   maps/mirte_map_sim.yaml
 ```
 
 Real robot:

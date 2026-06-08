@@ -28,7 +28,19 @@ def generate_launch_description():
         ]
     )
     params_file = LaunchConfiguration("params_file")
-    map_yaml = LaunchConfiguration("map")
+    map_yaml = PythonExpression(
+        [
+            "'",
+            LaunchConfiguration("map"),
+            "' if '",
+            LaunchConfiguration("map"),
+            "' != 'auto' else "
+            "('maps/mirte_map_sim.yaml' if '",
+            simulation,
+            "'.lower() in ('true', '1', 'yes') "
+            "else 'maps/mirte_map.yaml')",
+        ]
+    )
     localization_params_file = PathJoinSubstitution(
         [
             FindPackageShare("simbiosys_mapping"),
@@ -258,8 +270,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "map",
-                default_value="maps/mirte_map.yaml",
-                description="Saved map YAML file used by Nav2 map_server.",
+                default_value="auto",
+                description=(
+                    "auto uses maps/mirte_map_sim.yaml in simulation and "
+                    "maps/mirte_map.yaml on the real robot. Pass a YAML path "
+                    "to override."
+                ),
             ),
             DeclareLaunchArgument("autostart", default_value="true"),
             DeclareLaunchArgument("log_level", default_value="info"),

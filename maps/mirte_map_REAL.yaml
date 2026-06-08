@@ -1,4 +1,4 @@
-image: mirte_map.pgm
+image: mirte_map_REAL.pgm
 mode: trinary
 resolution: 0.05000000074505806
 origin: [-0.6277509196351723, -2.776084973410671, 0.0]

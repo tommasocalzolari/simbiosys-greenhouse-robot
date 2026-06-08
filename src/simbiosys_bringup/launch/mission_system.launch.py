@@ -83,8 +83,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "map",
-                default_value="maps/mirte_map_REAL.yaml",
-                description="Saved map YAML used by Nav2 map_server.",
+                default_value="auto",
+                description=(
+                    "auto selects the simulation or real map in the navigation launch."
+                ),
             ),
             DeclareLaunchArgument("start_rviz", default_value="true"),
             DeclareLaunchArgument(
