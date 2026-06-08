@@ -103,21 +103,21 @@ controller_server:
       rotate_to_goal_heading: true
       debug_trajectory_details: false
       min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
-      min_vel_y: 0.0
+      min_vel_y: -0.12        # allow holonomic strafing to the robot's right/left
       max_vel_x: 0.26          # must be above the observed ~0.20 m/s linear deadband
-      max_vel_y: 0.0
+      max_vel_y: 0.12          # conservative lateral speed for mecanum/swedish wheels
       max_vel_theta: 1.0      # allow stronger turns in tight spaces
       min_speed_xy: 0.0
-      max_speed_xy: 0.24       # above linear deadband but still slow for a small map
+      max_speed_xy: 0.26       # cap combined x/y speed while still allowing lateral motion
       min_speed_theta: 0.45     # observed minimum angular command needed to actually rotate
       acc_lim_x: 0.4          #0.5
-      acc_lim_y: 0.0
+      acc_lim_y: 0.3           # lateral acceleration limit for smooth strafing
       acc_lim_theta: 1.6       # stronger angular acceleration for initial turns/corners
       decel_lim_x: -0.35        # allow braking/recovery without being too abrupt
-      decel_lim_y: 0.0
+      decel_lim_y: -0.3        # lateral braking limit
       decel_lim_theta: -1.0     # stronger angular deceleration for corners
       vx_samples: 12
-      vy_samples: 1
+      vy_samples: 7            # sample lateral trajectories instead of only forward/turning
       vtheta_samples: 32
       sim_time: 0.6
       linear_granularity: 0.05
