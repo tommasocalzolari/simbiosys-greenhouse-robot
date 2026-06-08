@@ -98,17 +98,13 @@ the flower, closes below the flower head, lifts, drops at a fixed storage pose
 Default sequence:
 
 ```text
-move_stow_start
-open_gripper
-move_ready_above
 move_inspect
-move_pre_grasp
 move_grasp
 close_gripper
 lift
-move_storage
-open_gripper_drop
-move_stow_end
+turn_left_to_storage
+open_gripper
+move_stow
 ```I implemeted some bedside allignment streafe mode. however this is not working at all so i would like to start from scratch. somehow i need to get a strafe mode where the robot strafes left or right next to a flower bin. i want it to get allignment based on either lidar or depth cam. prefer lidar due to information size to get from the robot. the allignment should work on straight walls with small legs sticking out of about 1x1 cm, and then like 50 cm of straight wall. how would you tackle this problem. it should also handle corners . so at a corner it should not try to go around the corner
 
 The default motion backend is `simple_ik`. This keeps the demo independent from
@@ -257,6 +253,8 @@ Forward distance and height:
 ```text
 flower_distance_m           fixed forward distance to the flower head
 fallback_flower_height_m    used when FlowerTarget.height_cm is missing
+inspect_distance_offset_m   extra forward distance for the inspect pose
+inspect_height_offset_m     height above the flower for the inspect pose
 grasp_below_head_m          how far below the flower head to close fingers
 lift_above_grasp_m          lift after closing
 ready_distance_m            first high/near approach position

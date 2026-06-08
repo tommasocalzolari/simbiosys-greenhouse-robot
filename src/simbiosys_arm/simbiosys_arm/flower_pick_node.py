@@ -143,8 +143,9 @@ class FlowerPickNode(Node):
         self.declare_parameter("bbox_y_to_z_gain_m_per_px", 0.0005)
         self.declare_parameter("max_bbox_z_offset_m", 0.08)
         self.declare_parameter("flower_distance_m", 0.28)
-        self.declare_parameter("fallback_flower_height_m", 0.20)
-        self.declare_parameter("inspect_distance_offset_m", 0.06)
+        self.declare_parameter("fallback_flower_height_m", 0.25)
+        self.declare_parameter("inspect_distance_offset_m", 0.01)
+        self.declare_parameter("inspect_height_offset_m", 0.03)
         self.declare_parameter("pre_grasp_distance_offset_m", 0.03)
         self.declare_parameter("grasp_below_head_m", 0.015)
         self.declare_parameter("lift_above_grasp_m", 0.16)
@@ -255,17 +256,13 @@ class FlowerPickNode(Node):
             f"Starting flower pick for {target.flower_id or 'unnamed flower'}"
         )
         steps = [
-            ("move_stow_start", lambda: self._move_to_pose("stow")),
-            ("open_gripper", lambda: self._send_gripper(self._double_parameter("open_position"))),
-            ("move_ready_above", lambda: self._move_to_pose("ready")),
             ("move_inspect", lambda: self._move_to_pose("inspect")),
-            ("move_pre_grasp", lambda: self._move_to_pose("pre_grasp")),
             ("move_grasp", lambda: self._move_to_pose("grasp")),
             ("close_gripper", lambda: self._send_gripper(self._double_parameter("close_position"))),
             ("lift", lambda: self._move_to_pose("lift")),
-            ("move_storage", lambda: self._move_to_pose("storage")),
-            ("open_gripper_drop", lambda: self._send_gripper(self._double_parameter("open_position"))),
-            ("move_stow_end", lambda: self._move_to_pose("stow")),
+            ("turn_left_to_storage", lambda: self._move_to_pose("storage")),
+            ("open_gripper", lambda: self._send_gripper(self._double_parameter("open_position"))),
+            ("move_stow", lambda: self._move_to_pose("stow")),
         ]
 
         self._active_target = target
@@ -649,7 +646,7 @@ class FlowerPickNode(Node):
             return (
                 flower_x + self._double_parameter("inspect_distance_offset_m"),
                 flower_y,
-                flower_z,
+                flower_z + self._double_parameter("inspect_height_offset_m"),
             )
         if pose_name == "pre_grasp":
             return (
