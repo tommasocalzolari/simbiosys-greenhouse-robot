@@ -21,6 +21,16 @@ source install/setup.bash
 After code changes, rebuild:
 
 ```bash
+colcon build --packages-up-to simbiosys_mapping
+source install/setup.bash
+```
+
+On this Linux workspace, if a plugin built with Pixi's newer compiler fails to
+load with a `CXXABI` error, rebuild the C++ plugin with the Ubuntu compiler:
+
+```bash
+CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+  colcon build --packages-select simbiosys_final_approach_controller --cmake-clean-cache
 colcon build --packages-select simbiosys_mapping
 source install/setup.bash
 ```
@@ -175,6 +185,27 @@ In RViz:
 
 1. Use `2D Pose Estimate` to manually tell AMCL where the robot starts.
 2. Use `2D Goal Pose` to send one navigation goal.
+
+### Final approach
+
+Normal navigation still uses the rotation shim and DWB. When less than `0.80 m`
+of path remains, the controller latches into a direct holonomic pose approach.
+It commands forward, lateral, and angular velocity together from goal error in
+`base_link`, so the robot can strafe while rotating.
+
+The direct approach:
+
+- stops each axis independently inside tolerance;
+- tapers speed near the goal and applies deadband compensation farther away;
+- predicts the robot footprint over the next `0.50 s` in the local costmap;
+- resets the Nav2 progress checker whenever control mode changes;
+- returns to DWB if the path grows beyond `1.00 m` or direct motion is blocked;
+- stays suppressed after an obstruction until the path exceeds `1.00 m` or a
+  new goal is received, preventing repeated switching near the threshold.
+
+Tune the `controller_server.ros__parameters.FollowPath` values in
+`config/nav2_navigation.yaml`. The initial limits are `0.03 m`, `5 degrees`,
+`0.50 m/s` for both translation axes, and `1.00 rad/s` for rotation.
 
 Useful checks:
 

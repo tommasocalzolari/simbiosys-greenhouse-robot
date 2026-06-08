@@ -79,69 +79,86 @@ controller_server:
     controller_plugins: ["FollowPath"]
 
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      plugin: simbiosys_final_approach_controller::ResettableProgressChecker
       required_movement_radius: 0.03
       movement_time_allowance: 18.0
+      reset_topic: final_approach_reset
 
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.18 # still relaxed, but slightly more precise
-      yaw_goal_tolerance: 0.18 # less permissive theta/yaw error at the final goal
-
+      xy_goal_tolerance: 0.03
+      yaw_goal_tolerance: 0.0872665  # 5 degrees
       stateful: true
 
     FollowPath:
-      plugin: nav2_rotation_shim_controller::RotationShimController
-      primary_controller: dwb_core::DWBLocalPlanner
-      # Rotate in place to align with the first part of the global path before driving.
-      angular_dist_threshold: 0.2       # rad; align to path already from ~14 deg heading error
-      angular_disengage_threshold: 0.06  #makes the robot rotate until heading error is small
-      forward_sampling_distance: 0.25    # m; look only a short distance ahead in this small map
-      rotate_to_heading_angular_vel: 0.55 # rad/s; above the observed ~0.40 rad/s angular deadband
-      # DWB's min_speed_theta does not apply while this shim performs initial/final turns.
-      # At 15 Hz, 7.5 rad/s^2 gives a 0.50 rad/s first step, above the motor dead zone.
-      max_angular_accel: 7.5
-      # Ramp from the previous command; measured odometry stays zero below the dead zone.
-      closed_loop: false
-      simulate_ahead_time: 0.6
-      rotate_to_goal_heading: true
-      debug_trajectory_details: false
-      min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
-      min_vel_y: -0.12        # allow holonomic strafing to the robot's right/left
-      max_vel_x: 0.26          # must be above the observed ~0.20 m/s linear deadband
-      max_vel_y: 0.12          # conservative lateral speed for mecanum/swedish wheels
-      max_vel_theta: 1.0      # allow stronger turns in tight spaces
-      min_speed_xy: 0.0
-      max_speed_xy: 0.26       # cap combined x/y speed while still allowing lateral motion
-      min_speed_theta: 0.45     # observed minimum angular command needed to actually rotate
-      acc_lim_x: 0.4          #0.5
-      acc_lim_y: 0.3           # lateral acceleration limit for smooth strafing
-      acc_lim_theta: 1.6       # stronger angular acceleration for initial turns/corners
-      decel_lim_x: -0.35        # allow braking/recovery without being too abrupt
-      decel_lim_y: -0.3        # lateral braking limit
-      decel_lim_theta: -1.0     # stronger angular deceleration for corners
-      vx_samples: 12
-      vy_samples: 7            # sample lateral trajectories instead of only forward/turning
-      vtheta_samples: 32
-      sim_time: 0.6
-      linear_granularity: 0.05
-      angular_granularity: 0.025
-      transform_tolerance: 0.2
-      xy_goal_tolerance: 0.18
-      trans_stopped_velocity: 0.08
-      short_circuit_trajectory_evaluation: true
-      stateful: true
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.06
-      PathAlign.scale: 12.0
-      PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 10.0
-      GoalAlign.forward_point_distance: 0.1
-      PathDist.scale: 14.0
-      GoalDist.scale: 12.0
-      RotateToGoal.scale: 12.0
-      RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
+      plugin: simbiosys_final_approach_controller::FinalApproachController
+      primary_controller: nav2_rotation_shim_controller::RotationShimController
+      entry_distance: 0.80
+      return_distance: 1.00
+      position_tolerance: 0.03
+      yaw_tolerance: 0.0872665  # 5 degrees
+      kx: 1.2
+      ky: 1.2
+      kyaw: 2.0
+      min_vx: 0.20
+      min_vy: 0.10
+      min_wz: 0.45
+      max_vx: 0.50
+      max_vy: 0.50
+      max_wz: 1.00
+      collision_horizon: 0.50
+      collision_step: 0.05
+      transform_tolerance: 0.20
+      reset_topic: final_approach_reset
+
+      primary:
+        primary_controller: dwb_core::DWBLocalPlanner
+        # Rotate to the path heading before normal DWB path following.
+        angular_dist_threshold: 0.2
+        angular_disengage_threshold: 0.06
+        forward_sampling_distance: 0.25
+        rotate_to_heading_angular_vel: 0.55
+        max_angular_accel: 7.5
+        closed_loop: false
+        simulate_ahead_time: 0.6
+        rotate_to_goal_heading: true
+        debug_trajectory_details: false
+        min_vel_x: 0.0
+        min_vel_y: -0.12
+        max_vel_x: 0.26
+        max_vel_y: 0.12
+        max_vel_theta: 1.0
+        min_speed_xy: 0.0
+        max_speed_xy: 0.26
+        min_speed_theta: 0.45
+        acc_lim_x: 0.4
+        acc_lim_y: 0.3
+        acc_lim_theta: 1.6
+        decel_lim_x: -0.35
+        decel_lim_y: -0.3
+        decel_lim_theta: -1.0
+        vx_samples: 12
+        vy_samples: 7
+        vtheta_samples: 32
+        sim_time: 0.6
+        linear_granularity: 0.05
+        angular_granularity: 0.025
+        transform_tolerance: 0.2
+        xy_goal_tolerance: 0.18
+        trans_stopped_velocity: 0.08
+        short_circuit_trajectory_evaluation: true
+        stateful: true
+        critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+        BaseObstacle.scale: 0.06
+        PathAlign.scale: 12.0
+        PathAlign.forward_point_distance: 0.1
+        GoalAlign.scale: 10.0
+        GoalAlign.forward_point_distance: 0.1
+        PathDist.scale: 14.0
+        GoalDist.scale: 12.0
+        RotateToGoal.scale: 12.0
+        RotateToGoal.slowing_factor: 5.0
+        RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
   local_costmap:

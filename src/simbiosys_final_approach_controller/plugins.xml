@@ -1,0 +1,19 @@
+<library path="simbiosys_final_approach_controller">
+  <class
+    name="simbiosys_final_approach_controller::FinalApproachController"
+    type="simbiosys_final_approach_controller::FinalApproachController"
+    base_class_type="nav2_core::Controller">
+    <description>
+      Delegates normal path following to another controller and latches into a
+      collision-checked holonomic pose controller near the final goal.
+    </description>
+  </class>
+  <class
+    name="simbiosys_final_approach_controller::ResettableProgressChecker"
+    type="simbiosys_final_approach_controller::ResettableProgressChecker"
+    base_class_type="nav2_core::ProgressChecker">
+    <description>
+      Nav2 simple progress checker that resets when the controller changes mode.
+    </description>
+  </class>
+</library>
