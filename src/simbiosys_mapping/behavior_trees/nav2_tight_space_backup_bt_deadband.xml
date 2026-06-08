@@ -13,7 +13,7 @@
           <FollowPath path="{path}" controller_id="FollowPath"/>
           <Sequence name="LocalClearAndBackup">
             <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
-            <BackUp backup_dist="0.16" backup_speed="0.22"/>
+            <BackUp backup_dist="0.16" backup_speed="0.275"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>
@@ -23,7 +23,7 @@
         <RoundRobin name="RecoveryActions">
           <Sequence name="ClearBackupReplan">
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
-            <BackUp backup_dist="0.18" backup_speed="0.22"/>
+            <BackUp backup_dist="0.18" backup_speed="0.275"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
           <Spin spin_dist="0.4"/>

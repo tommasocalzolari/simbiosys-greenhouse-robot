@@ -3052,7 +3052,11 @@ class UiNode(Node):
         self._publish_active_twist()
 
     def _publish_active_twist(self) -> None:
-        if self._safety_paused or not self._manual_control_active:
+        # Do not compete with Nav2 or other controllers unless the UI owns
+        # manual control. Control-release paths publish a one-shot zero Twist.
+        if not self._manual_control_active:
+            return
+        if self._safety_paused:
             self._publish_twist(0.0, 0.0, 0.0)
             return
         linear_x = 0.0

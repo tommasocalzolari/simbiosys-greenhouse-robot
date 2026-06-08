@@ -69,7 +69,8 @@ controller_server:
   ros__parameters:
     use_sim_time: false
     odom_topic: /mirte_base_controller/odom
-    controller_frequency: 15.0
+    # Match the MIRTE ros2_control controller_manager update rate.
+    controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
@@ -97,9 +98,9 @@ controller_server:
       angular_dist_threshold: 0.2       # rad; align to path already from ~14 deg heading error
       angular_disengage_threshold: 0.06  #makes the robot rotate until heading error is small
       forward_sampling_distance: 0.25    # m; look only a short distance ahead in this small map
-      rotate_to_heading_angular_vel: 0.55 # rad/s; above the observed ~0.40 rad/s angular deadband
+      rotate_to_heading_angular_vel: 0.69 # rad/s; approximately 25% above the original tuning
       # DWB's min_speed_theta does not apply while this shim performs initial/final turns.
-      # At 15 Hz, 7.5 rad/s^2 gives a 0.50 rad/s first step, above the motor dead zone.
+      # At 10 Hz, 7.5 rad/s^2 can reach the requested turn speed in one step.
       max_angular_accel: 7.5
       # Ramp from the previous command; measured odometry stays zero below the dead zone.
       closed_loop: false
@@ -107,19 +108,20 @@ controller_server:
       rotate_to_goal_heading: true
       debug_trajectory_details: false
       min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
-      min_vel_y: -0.12        # allow holonomic strafing to the robot's right/left
-      max_vel_x: 0.26          # must be above the observed ~0.20 m/s linear deadband
-      max_vel_y: 0.12          # conservative lateral speed for mecanum/swedish wheels
-      max_vel_theta: 1.0      # allow stronger turns in tight spaces
-      min_speed_xy: 0.0
-      max_speed_xy: 0.26       # cap combined x/y speed while still allowing lateral motion
-      min_speed_theta: 0.45     # observed minimum angular command needed to actually rotate
-      acc_lim_x: 0.4          #0.5
-      acc_lim_y: 0.3           # lateral acceleration limit for smooth strafing
-      acc_lim_theta: 1.6       # stronger angular acceleration for initial turns/corners
-      decel_lim_x: -0.35        # allow braking/recovery without being too abrupt
-      decel_lim_y: -0.3        # lateral braking limit
-      decel_lim_theta: -1.0     # stronger angular deceleration for corners
+      min_vel_y: -0.20         # allow rightward strafing at the shared minimum speed
+      max_vel_x: 0.325         # approximately 25% above the original tuning
+      max_vel_y: 0.20          # allow leftward strafing at the shared minimum speed
+      max_vel_theta: 1.25      # stronger turns in tight spaces
+      # Shared minimum translational magnitude for forward/backward and left/right motion.
+      min_speed_xy: 0.20
+      max_speed_xy: 0.325      # cap combined x/y speed while still allowing lateral motion
+      min_speed_theta: 0.5625   # 25% above the observed 0.45 rad/s rotational minimum
+      acc_lim_x: 0.50
+      acc_lim_y: 0.375         # lateral acceleration limit for smooth strafing
+      acc_lim_theta: 2.0       # stronger angular acceleration for initial turns/corners
+      decel_lim_x: -0.44       # firmer braking without being abrupt
+      decel_lim_y: -0.375      # lateral braking limit
+      decel_lim_theta: -1.25   # stronger angular deceleration for corners
       vx_samples: 12
       vy_samples: 7            # sample lateral trajectories instead of only forward/turning
       vtheta_samples: 32
@@ -128,7 +130,7 @@ controller_server:
       angular_granularity: 0.025
       transform_tolerance: 0.2
       xy_goal_tolerance: 0.18
-      trans_stopped_velocity: 0.08
+      trans_stopped_velocity: 0.10
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
@@ -155,7 +157,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.17  # slightly optimistic for tight spaces; increase if it clips obstacles too often
+      robot_radius: 0.20  # measured center-to-farthest-wheel distance
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -173,7 +175,7 @@ local_costmap:
           max_obstacle_height: 2.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.13
+        inflation_radius: 0.22  # must be at least as large as the robot radius
         cost_scaling_factor: 7.0
       always_send_full_costmap: true
 
@@ -186,7 +188,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       resolution: 0.05
-      robot_radius: 0.20  # 0.17
+      robot_radius: 0.20  # measured center-to-farthest-wheel distance
       track_unknown_space: true
       plugins: ["static_layer", "inflation_layer"]
       static_layer:
@@ -231,9 +233,9 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.2
     simulate_ahead_time: 1.0
-    max_rotational_vel: 1.00
-    min_rotational_vel: 0.45
-    rotational_acc_lim: 2.0
+    max_rotational_vel: 1.25
+    min_rotational_vel: 0.5625
+    rotational_acc_lim: 2.5
     behavior_plugins: ["spin", "backup", "wait"]
     spin:
       plugin: nav2_behaviors/Spin
