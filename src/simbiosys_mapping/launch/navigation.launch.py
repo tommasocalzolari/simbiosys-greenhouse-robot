@@ -183,7 +183,7 @@ def generate_launch_description():
         output="screen",
         parameters=[configured_params],
         arguments=["--ros-args", "--log-level", log_level],
-        remappings=remappings,
+        remappings=remappings + [("cmd_vel", cmd_vel_topic)],
     )
 
     bt_navigator = Node(

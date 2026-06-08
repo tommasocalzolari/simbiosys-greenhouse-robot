@@ -98,7 +98,11 @@ controller_server:
       angular_disengage_threshold: 0.06  #makes the robot rotate until heading error is small
       forward_sampling_distance: 0.25    # m; look only a short distance ahead in this small map
       rotate_to_heading_angular_vel: 0.55 # rad/s; above the observed ~0.40 rad/s angular deadband
-      max_angular_accel: 1.3
+      # DWB's min_speed_theta does not apply while this shim performs initial/final turns.
+      # At 15 Hz, 7.5 rad/s^2 gives a 0.50 rad/s first step, above the motor dead zone.
+      max_angular_accel: 7.5
+      # Ramp from the previous command; measured odometry stays zero below the dead zone.
+      closed_loop: false
       simulate_ahead_time: 0.6
       rotate_to_goal_heading: true
       debug_trajectory_details: false
@@ -228,7 +232,7 @@ behavior_server:
     transform_tolerance: 0.2
     simulate_ahead_time: 1.0
     max_rotational_vel: 1.00
-    min_rotational_vel: 0.40
+    min_rotational_vel: 0.45
     rotational_acc_lim: 2.0
     behavior_plugins: ["spin", "backup", "wait"]
     spin:
