@@ -89,6 +89,7 @@ ros-humble-navigation2 = ">=1.1.20,<2"
 ros-humble-nav2-bringup = ">=1.1.20,<2"
 ros-humble-nav2-map-server = ">=1.1.20,<2"
 ros-humble-tf2-tools = ">=0.25.19,<0.26"
+ultralytics = ">=8.4.61,<9"
 
 [activation]
 #scripts = ["install/setup.bash"]

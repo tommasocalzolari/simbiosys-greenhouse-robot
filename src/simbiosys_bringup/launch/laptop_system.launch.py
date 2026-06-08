@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -24,6 +25,9 @@ def generate_launch_description():
     motion_duration_sec = LaunchConfiguration("motion_duration_sec")
     bed_side_enable_motion = LaunchConfiguration("bed_side_enable_motion")
     operator_led_enabled = LaunchConfiguration("operator_led_enabled")
+    start_ui = LaunchConfiguration("start_ui")
+    start_bed_side_alignment = LaunchConfiguration("start_bed_side_alignment")
+    bed_side_surface_region = LaunchConfiguration("bed_side_surface_region")
     operator_led_single_service_name = LaunchConfiguration(
         "operator_led_single_service_name"
     )
@@ -52,8 +56,26 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "operator_led_enabled",
+                default_value="false",
+                description=(
+                    "Start MIRTE Neopixel operator status feedback. Requires "
+                    "mirte_msgs to be installed in this environment."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "start_ui",
                 default_value="true",
-                description="Enable MIRTE Neopixel operator status feedback.",
+                description="Start the SimBioSys web UI from this launch file.",
+            ),
+            DeclareLaunchArgument(
+                "start_bed_side_alignment",
+                default_value="true",
+                description="Start LaserScan-based bed-side alignment perception.",
+            ),
+            DeclareLaunchArgument(
+                "bed_side_surface_region",
+                default_value="left",
+                description="LaserScan region used for bed-side alignment: left, right, or front.",
             ),
             DeclareLaunchArgument(
                 "operator_led_single_service_name",
@@ -165,6 +187,7 @@ def generate_launch_description():
                 executable="operator_led_node",
                 name="operator_led_node",
                 output="screen",
+                condition=IfCondition(operator_led_enabled),
                 parameters=[
                     {
                         "enabled": operator_led_enabled,
@@ -173,6 +196,19 @@ def generate_launch_description():
                         "brightness": operator_led_brightness,
                         "turn_angular_threshold": operator_led_turn_angular_threshold,
                         "strafe_linear_y_threshold": operator_led_strafe_linear_y_threshold,
+                    }
+                ],
+            ),
+            Node(
+                package="simbiosys_perception",
+                executable="bed_side_alignment_node",
+                name="bed_side_alignment_node",
+                output="screen",
+                condition=IfCondition(start_bed_side_alignment),
+                parameters=[
+                    {
+                        "scan_topic": scan_topic,
+                        "surface_region": bed_side_surface_region,
                     }
                 ],
             ),
@@ -234,6 +270,7 @@ def generate_launch_description():
                 executable="ui_node",
                 name="ui_node",
                 output="screen",
+                condition=IfCondition(start_ui),
                 parameters=[
                     {
                         "image_topic": image_topic,

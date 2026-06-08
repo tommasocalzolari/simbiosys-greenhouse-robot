@@ -16,6 +16,10 @@ def generate_launch_description():
     odom_topic = LaunchConfiguration("odom_topic")
     scan_topic = LaunchConfiguration("scan_topic")
     bed_side_enable_motion = LaunchConfiguration("bed_side_enable_motion")
+    operator_led_enabled = LaunchConfiguration("operator_led_enabled")
+    start_ui = LaunchConfiguration("start_ui")
+    start_bed_side_alignment = LaunchConfiguration("start_bed_side_alignment")
+    bed_side_surface_region = LaunchConfiguration("bed_side_surface_region")
 
     navigation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -58,6 +62,10 @@ def generate_launch_description():
             "odom_topic": odom_topic,
             "scan_topic": scan_topic,
             "bed_side_enable_motion": bed_side_enable_motion,
+            "operator_led_enabled": operator_led_enabled,
+            "start_ui": start_ui,
+            "start_bed_side_alignment": start_bed_side_alignment,
+            "bed_side_surface_region": bed_side_surface_region,
         }.items(),
     )
 
@@ -99,6 +107,26 @@ def generate_launch_description():
                 "bed_side_enable_motion",
                 default_value="false",
                 description="Keep false while testing; true enables physical alignment cmd_vel output.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_enabled",
+                default_value="false",
+                description="Start operator LED feedback; requires mirte_msgs.",
+            ),
+            DeclareLaunchArgument(
+                "start_ui",
+                default_value="true",
+                description="Start the SimBioSys web UI from this launch file.",
+            ),
+            DeclareLaunchArgument(
+                "start_bed_side_alignment",
+                default_value="true",
+                description="Start LaserScan-based bed-side alignment perception.",
+            ),
+            DeclareLaunchArgument(
+                "bed_side_surface_region",
+                default_value="left",
+                description="LaserScan region used for bed-side alignment: left, right, or front.",
             ),
             navigation_launch,
             laptop_launch,
