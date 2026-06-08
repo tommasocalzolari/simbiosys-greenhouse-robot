@@ -31,10 +31,9 @@ MAX_DISPLAY_WIDTH = 1200
 MAX_BBOX_CENTER_Y_FRACTION = 0.35
 MIN_ASPECT_RATIO = 0.4
 MAX_ASPECT_RATIO = 2.5
-FOCAL_LENGTH_Y_PX = 615.0
-CAMERA_HEIGHT_MM = 80.0
-BOX_HEIGHT_MM = 190.0
-CAMERA_DISTANCE_MM = 450.0
+BAK_TOP_Y_PX = 110.0
+BAK_BOTTOM_Y_PX = 360.0
+BOX_HEIGHT_MM = 200.0
 
 
 def print_hsv_on_click(event, x, y, _flags, user_data):
@@ -164,14 +163,12 @@ def apply_nms(detections):
 
 
 def estimate_height_cm(image_shape, top_pixel):
-    image_height = image_shape[0]
     _top_x, top_y = top_pixel
-    depth_m = CAMERA_DISTANCE_MM / 1000.0
-    principal_y = image_height / 2.0
-    top_y_offset_m = (top_y - principal_y) * depth_m / FOCAL_LENGTH_Y_PX
-    flower_top_height_above_ground_mm = CAMERA_HEIGHT_MM - top_y_offset_m * 1000.0
-    flower_height_above_box_mm = flower_top_height_above_ground_mm - BOX_HEIGHT_MM
-    return flower_height_above_box_mm / 10.0
+    pixels_per_mm = (BAK_BOTTOM_Y_PX - BAK_TOP_Y_PX) / BOX_HEIGHT_MM
+    pixels_above_bak = BAK_TOP_Y_PX - top_y
+    height_above_box_mm = pixels_above_bak / pixels_per_mm
+    height_cm = height_above_box_mm / 10.0
+    return height_cm
 
 
 def dominant_summary(detections):

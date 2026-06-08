@@ -10,7 +10,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Bool
 
 import cv2
@@ -44,7 +44,6 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("image_topic", "/camera/color/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
-        self.declare_parameter("depth_camera_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("output_topic", "simbiosys/flower_data")
         self.declare_parameter("plant_health_topic", "simbiosys/plant_health")
         self.declare_parameter(
@@ -54,10 +53,9 @@ class FlowerDetectionNode(Node):
         self.declare_parameter("model_path", default_model_path)
         self.declare_parameter("depth_unit_scale", 0.001)
         self.declare_parameter("depth_roi_radius_px", 4)
-        self.declare_parameter("focal_length_y_px", 615.0)
-        self.declare_parameter("camera_height_mm", 80.0)
-        self.declare_parameter("box_height_mm", 190.0)
-        self.declare_parameter("camera_distance_mm", 450.0)
+        self.declare_parameter("bak_top_y_px", 110.0)
+        self.declare_parameter("bak_bottom_y_px", 360.0)
+        self.declare_parameter("box_height_mm", 200.0)
 
         self._image_topic = (
             self.get_parameter("image_topic").get_parameter_value().string_value
@@ -70,11 +68,6 @@ class FlowerDetectionNode(Node):
             self._subscribed_image_topic = f"{self._image_topic}/compressed"
         self._depth_topic = (
             self.get_parameter("depth_topic").get_parameter_value().string_value
-        )
-        self._depth_camera_info_topic = (
-            self.get_parameter("depth_camera_info_topic")
-            .get_parameter_value()
-            .string_value
         )
         output_topic = (
             self.get_parameter("output_topic").get_parameter_value().string_value
@@ -93,22 +86,18 @@ class FlowerDetectionNode(Node):
             .get_parameter_value()
             .integer_value
         )
-        self._focal_length_y_px = (
-            self.get_parameter("focal_length_y_px").get_parameter_value().double_value
+        self._bak_top_y_px = (
+            self.get_parameter("bak_top_y_px").get_parameter_value().double_value
         )
-        self._camera_height_mm = (
-            self.get_parameter("camera_height_mm").get_parameter_value().double_value
+        self._bak_bottom_y_px = (
+            self.get_parameter("bak_bottom_y_px").get_parameter_value().double_value
         )
         self._box_height_mm = (
             self.get_parameter("box_height_mm").get_parameter_value().double_value
         )
-        self._camera_distance_mm = (
-            self.get_parameter("camera_distance_mm").get_parameter_value().double_value
-        )
 
         self._bridge = CvBridge()
         self._latest_depth_m: np.ndarray | None = None
-        self._principal_y_px: float | None = None
         self._yolo_model = self._load_yolo_model()
         self._callback_group = ReentrantCallbackGroup()
         self._analysis_condition = threading.Condition()
@@ -144,13 +133,6 @@ class FlowerDetectionNode(Node):
             10,
             callback_group=self._callback_group,
         )
-        self._camera_info_subscription = self.create_subscription(
-            CameraInfo,
-            self._depth_camera_info_topic,
-            self._on_camera_info,
-            10,
-            callback_group=self._callback_group,
-        )
         self._analyze_action_server = ActionServer(
             self,
             AnalyzePlantScan,
@@ -171,17 +153,10 @@ class FlowerDetectionNode(Node):
             f"Flower detection backend=YOLOv8, model_path={self._model_path}"
         )
         self.get_logger().info(
-            f"Flower height geometry camera_height={self._camera_height_mm:.1f}mm, "
-            f"box_height={self._box_height_mm:.1f}mm, "
-            f"camera_distance={self._camera_distance_mm:.1f}mm "
-            "(intended flower scan distance)"
+            f"Flower height mapping bak_top_y={self._bak_top_y_px:.1f}px, "
+            f"bak_bottom_y={self._bak_bottom_y_px:.1f}px, "
+            f"box_height={self._box_height_mm:.1f}mm"
         )
-
-    def _on_camera_info(self, camera_info_msg: CameraInfo) -> None:
-        focal_length_y_px = camera_info_msg.k[4]
-        if focal_length_y_px > 0.0:
-            self._focal_length_y_px = focal_length_y_px
-            self._principal_y_px = camera_info_msg.k[5]
 
     def _on_depth(self, depth_msg: Image) -> None:
         try:
@@ -578,46 +553,18 @@ class FlowerDetectionNode(Node):
     ) -> float | None:
         if detection is None:
             return None
-        if self._focal_length_y_px <= 0.0:
-            self.get_logger().warning("focal_length_y_px must be greater than zero")
+        pixels_per_mm = (
+            (self._bak_bottom_y_px - self._bak_top_y_px) / self._box_height_mm
+        )
+        if pixels_per_mm <= 0.0:
+            self.get_logger().warning("Flower height mapping must be greater than zero")
             return None
 
-        color_height, color_width = color_shape[:2]
-        top_x, top_y = detection.top_pixel
-        depth_m = self._camera_distance_mm / 1000.0
-        top_pixel_y = top_y
-
-        if self._latest_depth_m is not None:
-            depth = self._latest_depth_m
-            depth_height, depth_width = depth.shape[:2]
-            scale_x = depth_width / color_width
-            scale_y = depth_height / color_height
-
-            top_depth_x = int(round(top_x * scale_x))
-            top_depth_y = int(round(top_y * scale_y))
-            top_depth_m = self._sample_depth_m(depth, top_depth_x, top_depth_y)
-            if top_depth_m is not None:
-                depth_m = top_depth_m
-
-            top_pixel_y = top_depth_y
-            fallback_principal_y = depth_height / 2.0
-        else:
-            fallback_principal_y = color_height / 2.0
-
-        principal_y = self._principal_y_px
-        if principal_y is None:
-            principal_y = fallback_principal_y
-
-        top_y_offset_m = (
-            (top_pixel_y - principal_y) * depth_m / self._focal_length_y_px
-        )
-        flower_top_height_above_ground_mm = self._camera_height_mm - (
-            top_y_offset_m * 1000.0
-        )
-        flower_height_above_box_mm = (
-            flower_top_height_above_ground_mm - self._box_height_mm
-        )
-        return flower_height_above_box_mm / 10.0
+        _top_x, top_pixel_y = detection.top_pixel
+        pixels_above_bak = self._bak_top_y_px - top_pixel_y
+        height_above_box_mm = pixels_above_bak / pixels_per_mm
+        height_cm = height_above_box_mm / 10.0
+        return height_cm
 
     def _sample_depth_m(
         self,
