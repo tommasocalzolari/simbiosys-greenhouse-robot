@@ -7,6 +7,8 @@ import rclpy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool
@@ -108,9 +110,14 @@ class FlowerDetectionNode(Node):
         self._latest_depth_m: np.ndarray | None = None
         self._principal_y_px: float | None = None
         self._yolo_model = self._load_yolo_model()
+        self._callback_group = ReentrantCallbackGroup()
         self._analysis_condition = threading.Condition()
         self._analysis_seq = 0
+        self._analysis_request_reserved = False
         self._active_scan_context = None
+        self._active_analysis_goal_handle = None
+        self._active_image_taken = False
+        self._image_subscription = None
         self._latest_flower_data = FlowerData()
         self._latest_plant_health = PlantHealth()
         self._latest_analysis_message = ""
@@ -130,24 +137,19 @@ class FlowerDetectionNode(Node):
             "/simbiosys/flower_debug_image",
             10,
         )
-        image_msg_type = CompressedImage if self._use_compressed else Image
-        self._image_subscription = self.create_subscription(
-            image_msg_type,
-            self._subscribed_image_topic,
-            self._on_image,
-            10,
-        )
         self._depth_subscription = self.create_subscription(
             Image,
             self._depth_topic,
             self._on_depth,
             10,
+            callback_group=self._callback_group,
         )
         self._camera_info_subscription = self.create_subscription(
             CameraInfo,
             self._depth_camera_info_topic,
             self._on_camera_info,
             10,
+            callback_group=self._callback_group,
         )
         self._analyze_action_server = ActionServer(
             self,
@@ -158,10 +160,11 @@ class FlowerDetectionNode(Node):
             execute_callback=self._execute_analyze_plant_scan,
             goal_callback=self._analyze_goal_callback,
             cancel_callback=self._analyze_cancel_callback,
+            callback_group=self._callback_group,
         )
 
         self.get_logger().info(
-            f"Flower detection listening on color={self._subscribed_image_topic}, "
+            f"Flower detection will request color={self._subscribed_image_topic}, "
             f"depth={self._depth_topic}, publishing {output_topic}"
         )
         self.get_logger().info(
@@ -200,11 +203,22 @@ class FlowerDetectionNode(Node):
         if frame is None:
             return
 
-        scan_context = self._scan_context_snapshot()
-        detections, bug_detected = self._detect_frame(frame)
-        if bug_detected:
-            self._publish_bug_detected()
+        with self._analysis_condition:
+            if self._active_scan_context is None or self._active_image_taken:
+                return
+            self._active_image_taken = True
+            scan_context = self._active_scan_context
+            goal_handle = self._active_analysis_goal_handle
 
+        if goal_handle is not None:
+            self._publish_analyze_feedback(
+                goal_handle,
+                "analyzing",
+                0.5,
+                f"Analyzing image for {scan_context.scan_position.scan_position_id}",
+        )
+
+        detections, bug_detected = self._detect_frame(frame)
         height_by_detection = [
             self._estimate_height_cm(detection, frame.shape)
             for detection in detections
@@ -216,10 +230,18 @@ class FlowerDetectionNode(Node):
             bug_detected,
             scan_context,
         )
+        if not self._store_latest_analysis(
+            flower_data,
+            plant_health,
+            scan_context,
+            goal_handle,
+        ):
+            return
 
+        if bug_detected:
+            self._publish_bug_detected()
         self._publisher.publish(flower_data)
         self._plant_health_publisher.publish(plant_health)
-        self._store_latest_analysis(flower_data, plant_health)
 
         self._publish_debug_image(frame, detections, height_by_detection, image_msg)
 
@@ -228,15 +250,18 @@ class FlowerDetectionNode(Node):
             self.get_logger().warning("Rejecting plant scan analysis without scan position id")
             return GoalResponse.REJECT
         with self._analysis_condition:
-            if self._active_scan_context is not None:
+            if (
+                self._analysis_request_reserved
+                or self._active_scan_context is not None
+                or self._image_subscription is not None
+            ):
                 self.get_logger().warning("Rejecting plant scan analysis while another request is active")
                 return GoalResponse.REJECT
+            self._analysis_request_reserved = True
         return GoalResponse.ACCEPT
 
     def _analyze_cancel_callback(self, _goal_handle) -> CancelResponse:
-        with self._analysis_condition:
-            self._active_scan_context = None
-            self._analysis_condition.notify_all()
+        self._clear_active_request()
         return CancelResponse.ACCEPT
 
     def _execute_analyze_plant_scan(self, goal_handle):
@@ -263,12 +288,17 @@ class FlowerDetectionNode(Node):
             result.plant_health = plant_health
             result.message = flower_data.message
             goal_handle.succeed()
+            self._clear_active_request()
             return result
 
         timeout_sec = float(goal.timeout_sec) if goal.timeout_sec > 0.0 else 5.0
         with self._analysis_condition:
             start_seq = self._analysis_seq
             self._active_scan_context = goal
+            self._active_analysis_goal_handle = goal_handle
+            self._active_image_taken = False
+            self._analysis_request_reserved = False
+        self._start_image_subscription()
 
         self._publish_analyze_feedback(
             goal_handle,
@@ -278,31 +308,36 @@ class FlowerDetectionNode(Node):
         )
 
         deadline = time.monotonic() + timeout_sec
-        with self._analysis_condition:
-            while rclpy.ok() and self._analysis_seq <= start_seq:
-                if goal_handle.is_cancel_requested:
-                    self._active_scan_context = None
-                    goal_handle.canceled()
-                    result.success = False
-                    result.message = "plant scan analysis cancelled"
-                    return result
-                remaining_sec = deadline - time.monotonic()
-                if remaining_sec <= 0.0:
-                    self._active_scan_context = None
-                    result.success = False
-                    result.message = "TIMEOUT: no fresh image received for plant scan analysis"
-                    goal_handle.abort()
-                    return result
-                self._analysis_condition.wait(timeout=min(0.1, remaining_sec))
+        try:
+            with self._analysis_condition:
+                while self._analysis_seq <= start_seq:
+                    if not rclpy.ok():
+                        result.success = False
+                        result.message = "SHUTDOWN: plant scan analysis interrupted"
+                        goal_handle.abort()
+                        return result
+                    if goal_handle.is_cancel_requested:
+                        goal_handle.canceled()
+                        result.success = False
+                        result.message = "plant scan analysis cancelled"
+                        return result
+                    remaining_sec = deadline - time.monotonic()
+                    if remaining_sec <= 0.0:
+                        result.success = False
+                        result.message = "TIMEOUT: no fresh image received for plant scan analysis"
+                        goal_handle.abort()
+                        return result
+                    self._analysis_condition.wait(timeout=min(0.1, remaining_sec))
 
-            self._active_scan_context = None
-            flower_data = self._latest_flower_data
-            plant_health = self._latest_plant_health
-            message = self._latest_analysis_message
+                flower_data = self._latest_flower_data
+                plant_health = self._latest_plant_health
+                message = self._latest_analysis_message
+        finally:
+            self._clear_active_request()
 
         self._publish_analyze_feedback(
             goal_handle,
-            "analyzed",
+            "completed",
             1.0,
             message or flower_data.message,
         )
@@ -330,17 +365,59 @@ class FlowerDetectionNode(Node):
         with self._analysis_condition:
             return self._active_scan_context
 
+    def _start_image_subscription(self) -> None:
+        with self._analysis_condition:
+            if self._image_subscription is not None:
+                return
+            image_msg_type = CompressedImage if self._use_compressed else Image
+            self._image_subscription = self.create_subscription(
+                image_msg_type,
+                self._subscribed_image_topic,
+                self._on_image,
+                10,
+                callback_group=self._callback_group,
+            )
+
+    def _release_image_subscription(self) -> None:
+        with self._analysis_condition:
+            subscription = self._image_subscription
+            self._image_subscription = None
+        if subscription is not None:
+            self.destroy_subscription(subscription)
+
+    def _clear_active_request(self) -> None:
+        self._release_image_subscription()
+        with self._analysis_condition:
+            self._active_scan_context = None
+            self._active_analysis_goal_handle = None
+            self._active_image_taken = False
+            self._analysis_request_reserved = False
+            self._analysis_condition.notify_all()
+
     def _store_latest_analysis(
         self,
         flower_data: FlowerData,
         plant_health: PlantHealth,
-    ) -> None:
+        expected_scan_context=None,
+        expected_goal_handle=None,
+    ) -> bool:
         with self._analysis_condition:
+            if (
+                expected_scan_context is not None
+                and self._active_scan_context is not expected_scan_context
+            ):
+                return False
+            if (
+                expected_goal_handle is not None
+                and self._active_analysis_goal_handle is not expected_goal_handle
+            ):
+                return False
             self._latest_flower_data = flower_data
             self._latest_plant_health = plant_health
             self._latest_analysis_message = plant_health.notes or flower_data.message
             self._analysis_seq += 1
             self._analysis_condition.notify_all()
+            return True
 
     def _load_yolo_model(self):
         model_path = Path(self._model_path).expanduser()
@@ -724,11 +801,17 @@ class FlowerDetectionNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = FlowerDetectionNode()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
+        executor.remove_node(node)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
