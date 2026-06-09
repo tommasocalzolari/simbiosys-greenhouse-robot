@@ -171,6 +171,14 @@ def estimate_height_cm(image_shape, top_pixel):
     return height_cm
 
 
+def height_warning_message(height_cm):
+    if height_cm <= 5.7:
+        return "Low flower detection, probably flower detection from row behind!"
+    if height_cm >= 8.8:
+        return "Max flower height detected of 8.8cm so probably higher, inspect with wrist camera for accurate analysis!"
+    return ""
+
+
 def dominant_summary(detections):
     if not detections:
         return "none", 0, []
@@ -222,6 +230,8 @@ def print_detections(detections):
             print(f"   confidence: {detection['confidence']:.3f}")
         if "height_cm" in detection:
             print(f"   height_cm: {detection['height_cm']:.1f}")
+        if detection.get("warning_message"):
+            print(f"   warning: {detection['warning_message']}")
         if "area" in detection:
             print(f"   area: {detection['area']:.0f}")
 
@@ -259,11 +269,12 @@ def detect_with_yolo(image):
             color_name = YOLO_FLOWER_LABELS.get(class_id)
             if color_name is None:
                 continue
-            if y >= image_height * 0.5:
+            if y >= image_height * 0.40:
                 continue
 
             center = (int(round(x + width / 2.0)), int(round(y + height / 2.0)))
             top_pixel = (center[0], y)
+            height_cm = estimate_height_cm(image.shape, top_pixel)
             detections.append(
                 {
                     "color": color_name,
@@ -271,7 +282,8 @@ def detect_with_yolo(image):
                     "bbox": (x, y, width, height),
                     "center": center,
                     "top_pixel": top_pixel,
-                    "height_cm": estimate_height_cm(image.shape, top_pixel),
+                    "height_cm": height_cm,
+                    "warning_message": height_warning_message(height_cm),
                 }
             )
 

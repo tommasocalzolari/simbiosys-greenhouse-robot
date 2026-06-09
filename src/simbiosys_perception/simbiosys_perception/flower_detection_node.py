@@ -450,7 +450,7 @@ class FlowerDetectionNode(Node):
             y = max(0, int(round(y_center - box_height / 2.0)))
             width = max(1, int(round(box_width)))
             height = max(1, int(round(box_height)))
-            if y >= image_height * 0.5:
+            if y >= image_height * 0.40:
                 continue
 
             confidence = float(box.conf[0]) if box.conf is not None else None
@@ -566,6 +566,15 @@ class FlowerDetectionNode(Node):
         height_cm = height_above_box_mm / 10.0
         return height_cm
 
+    def _height_warning_message(self, height_cm: float | None) -> str:
+        if height_cm is None:
+            return ""
+        if height_cm <= 5.7:
+            return "Low flower detection, probably flower detection from row behind!"
+        if height_cm >= 8.8:
+            return "Max flower height detected of 8.8cm so probably higher, inspect with wrist camera for accurate analysis!"
+        return ""
+
     def _sample_depth_m(
         self,
         depth: np.ndarray,
@@ -614,12 +623,17 @@ class FlowerDetectionNode(Node):
                 item[0],
             ),
         )
+        ordered_detection_heights = sorted(
+            zip(detections, heights_cm),
+            key=lambda item: item[0].bbox[0],
+        )
         ordered_heights = [
             0.0 if height_cm is None else float(height_cm)
-            for detection, height_cm in sorted(
-                zip(detections, heights_cm),
-                key=lambda item: item[0].bbox[0],
-            )
+            for _detection, height_cm in ordered_detection_heights
+        ]
+        warning_messages = [
+            self._height_warning_message(height_cm)
+            for _detection, height_cm in ordered_detection_heights
         ]
 
         msg.detected = True
@@ -633,6 +647,8 @@ class FlowerDetectionNode(Node):
             f"dominant_confidence={msg.dominant_confidence:.2f}; "
             f"heights_cm={[round(height_cm, 1) for height_cm in ordered_heights]}"
         )
+        if any(warning_messages):
+            msg.message += f"; warnings={[warning for warning in warning_messages if warning]}"
         return msg
 
     def _plant_health_from_flower_data(
