@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import rclpy
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionServer
 from rclpy.executors import ExternalShutdownException
@@ -115,78 +115,6 @@ def make_greenhouse_map() -> list[int]:
         fill_rect(data, gx - 1, gy - 1, gx + 1, gy + 1, 100)
 
     return data
-
-
-def make_artifact_candidates() -> dict[str, Any]:
-    return {
-        "timestamp": iso_now(),
-        "frame_id": "map",
-        "candidates": [
-            {
-                "id": "artifact_1",
-                "candidate_type": "unclassified",
-                "source": "slam",
-                "confidence": 0.95,
-                "geometry": {
-                    "type": "polygon",
-                    "points": [
-                        {"x": -0.7, "y": -0.7},
-                        {"x": 10.7, "y": -0.7},
-                        {"x": 10.7, "y": 6.7},
-                        {"x": -0.7, "y": 6.7},
-                    ],
-                },
-            },
-            {
-                "id": "artifact_2",
-                "candidate_type": "unclassified",
-                "source": "slam",
-                "confidence": 0.9,
-                "geometry": {
-                    "type": "rectangle",
-                    "pose": {"x": 1.0, "y": 1.2, "theta": 0.0},
-                    "size": {"width": 1.4, "height": 4.8},
-                },
-            },
-            {
-                "id": "artifact_3",
-                "candidate_type": "unclassified",
-                "source": "slam",
-                "confidence": 0.88,
-                "geometry": {
-                    "type": "rectangle",
-                    "pose": {"x": 4.1, "y": 1.2, "theta": 0.0},
-                    "size": {"width": 1.4, "height": 4.8},
-                },
-            },
-            {
-                "id": "artifact_4",
-                "candidate_type": "unclassified",
-                "source": "slam",
-                "confidence": 0.87,
-                "geometry": {
-                    "type": "polygon",
-                    "points": [
-                        {"x": 6.2, "y": 4.7},
-                        {"x": 6.9, "y": 4.7},
-                        {"x": 6.9, "y": 5.3},
-                        {"x": 6.2, "y": 5.3},
-                    ],
-                },
-            },
-            {
-                "id": "artifact_5",
-                "candidate_type": "unclassified",
-                "source": "slam",
-                "confidence": 0.73,
-                "geometry": {
-                    "type": "circle",
-                    "center": {"x": 2.9, "y": 6.5},
-                    "radius": 0.18,
-                },
-            },
-        ],
-    }
 
 
 def make_mock_plant(
@@ -340,8 +268,8 @@ class UiTestDataPublisher(Node):
         self._odom_pub = self.create_publisher(
             Odometry, "/mirte_base_controller/odom", 10
         )
-        self._artifact_pub = self.create_publisher(
-            String, "/mapping/artifact_candidates", 1
+        self._amcl_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, "/amcl_pose", 10
         )
         self._mapping_status_pub = self.create_publisher(
             MappingStatus, "simbiosys/mapping_status", 10
@@ -401,7 +329,6 @@ class UiTestDataPublisher(Node):
             self.get_logger().info("Published one UI test data set.")
         else:
             self.create_timer(map_period, self.publish_map)
-            self.create_timer(map_period, self.publish_artifact_candidates)
             self.create_timer(bed_period, self.publish_perception_data)
             self.create_timer(bed_period, self.publish_behavior_status)
             self.create_timer(20.0, self.publish_mapping_status)
@@ -410,8 +337,8 @@ class UiTestDataPublisher(Node):
             self.publish_all()
             self.get_logger().info(
                 "Publishing test-only UI data on /map, /mirte_base_controller/odom, "
-                "/mapping/artifact_candidates, simbiosys/mapping_status, "
-                "simbiosys/scan_progress, simbiosys/harvest_status, "
+                "/amcl_pose, "
+                "simbiosys/mapping_status, simbiosys/scan_progress, simbiosys/harvest_status, "
                 "/bed_environment, /io/power/power_watcher, /simbiosys/current_bed_id, "
                 "simbiosys/bed_observation, simbiosys/plant_analysis, "
                 "simbiosys/plant_health, /plant_health_report, /plant_health, "
@@ -423,7 +350,6 @@ class UiTestDataPublisher(Node):
 
     def publish_all(self) -> None:
         self.publish_map()
-        self.publish_artifact_candidates()
         self.publish_perception_data()
         self.publish_behavior_status()
         self.publish_mapping_status()
@@ -449,10 +375,10 @@ class UiTestDataPublisher(Node):
         elapsed = (
             self.get_clock().now().nanoseconds - self._start_time.nanoseconds
         ) / 1_000_000_000.0
-        center_x = 5.0
-        center_y = 3.4
-        radius_x = 3.8
-        radius_y = 2.2
+        center_x = 0.2
+        center_y = 0.8
+        radius_x = 0.8
+        radius_y = 1.0
         angular_speed = 0.08
         angle = elapsed * angular_speed
         x = center_x + radius_x * math.cos(angle)
@@ -476,10 +402,20 @@ class UiTestDataPublisher(Node):
         message.twist.twist.angular.z = angular_speed
         self._odom_pub.publish(message)
 
-    def publish_artifact_candidates(self) -> None:
-        message = String()
-        message.data = json.dumps(make_artifact_candidates(), separators=(",", ":"))
-        self._artifact_pub.publish(message)
+        amcl_message = PoseWithCovarianceStamped()
+        amcl_message.header.stamp = message.header.stamp
+        amcl_message.header.frame_id = "map"
+        amcl_message.pose.pose.position.x = x
+        amcl_message.pose.pose.position.y = y
+        amcl_message.pose.pose.position.z = 0.0
+        amcl_message.pose.pose.orientation.x = qx
+        amcl_message.pose.pose.orientation.y = qy
+        amcl_message.pose.pose.orientation.z = qz
+        amcl_message.pose.pose.orientation.w = qw
+        amcl_message.pose.covariance[0] = 0.05
+        amcl_message.pose.covariance[7] = 0.05
+        amcl_message.pose.covariance[35] = 0.02
+        self._amcl_pose_pub.publish(amcl_message)
 
     def publish_mapping_status(self) -> None:
         message = MappingStatus()
@@ -782,7 +718,6 @@ class UiTestDataPublisher(Node):
         _request: Trigger.Request,
         response: Trigger.Response,
     ) -> Trigger.Response:
-        self.publish_artifact_candidates()
         response.success = True
         response.message = "test mapping finalized"
         return response
@@ -812,7 +747,7 @@ def parse_args() -> argparse.Namespace:
         "--map-period",
         type=positive_float,
         default=20.0,
-        help="Seconds between /map and /mapping/artifact_candidates publishes.",
+        help="Seconds between /map publishes.",
     )
     parser.add_argument(
         "--bed-period",
