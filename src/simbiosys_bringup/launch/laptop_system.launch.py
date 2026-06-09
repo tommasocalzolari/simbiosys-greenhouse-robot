@@ -38,6 +38,9 @@ def generate_launch_description():
     operator_led_strafe_linear_y_threshold = LaunchConfiguration(
         "operator_led_strafe_linear_y_threshold"
     )
+    operator_led_manual_control_topic = LaunchConfiguration(
+        "operator_led_manual_control_topic"
+    )
 
     return LaunchDescription(
         [
@@ -96,6 +99,13 @@ def generate_launch_description():
                 "operator_led_strafe_linear_y_threshold",
                 default_value="0.03",
                 description="Minimum absolute cmd_vel linear.y for strafe blinkers.",
+            ),
+            DeclareLaunchArgument(
+                "operator_led_manual_control_topic",
+                default_value="simbiosys/ui/manual_control_active",
+                description=(
+                    "Latched Bool topic indicating whether UI teleop owns control."
+                ),
             ),
             DeclareLaunchArgument(
                 "image_topic",
@@ -193,6 +203,7 @@ def generate_launch_description():
                         "enabled": operator_led_enabled,
                         "set_single_service_name": operator_led_single_service_name,
                         "cmd_vel_topic": cmd_vel_topic,
+                        "manual_control_topic": operator_led_manual_control_topic,
                         "brightness": operator_led_brightness,
                         "turn_angular_threshold": operator_led_turn_angular_threshold,
                         "strafe_linear_y_threshold": operator_led_strafe_linear_y_threshold,

@@ -6,6 +6,8 @@ from geometry_msgs.msg import Twist
 from mirte_msgs.srv import SetNeopixelSingle
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool
 
 from simbiosys_interfaces.msg import TaskStatus
 
@@ -47,6 +49,10 @@ class OperatorLedNode(Node):
         )
         self.declare_parameter("cmd_vel_topic", "/mirte_base_controller/cmd_vel")
         self.declare_parameter("task_status_topic", "simbiosys/task_status")
+        self.declare_parameter(
+            "manual_control_topic",
+            "simbiosys/ui/manual_control_active",
+        )
         self.declare_parameter("brightness", 0.35)
         self.declare_parameter("update_period_sec", 0.1)
         self.declare_parameter("blink_period_sec", 0.5)
@@ -71,6 +77,7 @@ class OperatorLedNode(Node):
         self._latest_cmd_vel_time = 0.0
         self._latest_task_status: TaskStatus | None = None
         self._latest_task_status_time = 0.0
+        self._manual_control_active: bool | None = None
         self._last_sent_colors: list[LedColor | None] = [
             None for _ in range(self._int_parameter("led_count"))
         ]
@@ -89,6 +96,17 @@ class OperatorLedNode(Node):
             self._on_task_status,
             10,
         )
+        manual_control_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.create_subscription(
+            Bool,
+            self._string_parameter("manual_control_topic"),
+            self._on_manual_control,
+            manual_control_qos,
+        )
 
         period = max(0.05, self._double_parameter("update_period_sec"))
         self.create_timer(period, self._on_timer)
@@ -105,6 +123,9 @@ class OperatorLedNode(Node):
     def _on_task_status(self, msg: TaskStatus) -> None:
         self._latest_task_status = msg
         self._latest_task_status_time = time.monotonic()
+
+    def _on_manual_control(self, msg: Bool) -> None:
+        self._manual_control_active = bool(msg.data)
 
     def _on_timer(self) -> None:
         self._pending_futures = [
@@ -151,12 +172,16 @@ class OperatorLedNode(Node):
 
     def _base_mode_color(self) -> LedColor:
         status = self._latest_task_status
+        if status is not None and status.error:
+            return RED
+
+        if self._manual_control_active is not None:
+            return BLUE if self._manual_control_active else GREEN
+
         if status is None:
             return GREEN
 
-        if status.error:
-            return RED
-
+        # Fall back to task status for deployments without the UI mode topic.
         state = status.current_state.strip().upper()
         message = status.message.strip().upper()
         if "TELEOP" in state or "TELEOP" in message:
@@ -197,7 +222,10 @@ class OperatorLedNode(Node):
         brightness = self._double_parameter("brightness")
         for index, color in enumerate(desired_colors):
             scaled_color = color.scaled(brightness)
-            if index < len(self._last_sent_colors) and self._last_sent_colors[index] == scaled_color:
+            if (
+                index < len(self._last_sent_colors)
+                and self._last_sent_colors[index] == scaled_color
+            ):
                 continue
 
             request = SetNeopixelSingle.Request()
