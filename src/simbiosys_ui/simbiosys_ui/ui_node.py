@@ -52,6 +52,7 @@ except ImportError:
     SetRobotMode = None
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "rosTopics.json"
+ROBOT_ICON_PATH = Path(__file__).resolve().parent / "SimBioSys_logov2.png"
 DEFAULT_WEB_HOST = "0.0.0.0"
 DEFAULT_WEB_PORT = 8080
 DEFAULT_TELEOP_QUEUE_DEPTH = 1
@@ -649,6 +650,11 @@ INDEX_HTML = """<!doctype html>
       safetyPaused: false,
       topics: {}
     };
+    const robotIcon = new Image();
+    robotIcon.addEventListener("load", () => {
+      renderMaps({map: state.reviewMode && state.frozenMap ? state.frozenMap : state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
+    });
+    robotIcon.src = "/assets/robot.png";
     const pages = {
       dashboard: document.getElementById("dashboard-page"),
       teleop: document.getElementById("teleop-page"),
@@ -1084,20 +1090,34 @@ INDEX_HTML = """<!doctype html>
       document.getElementById("map-zoom-reset").textContent = `${state.mapZoom.toFixed(1)}x`;
       renderMaps({map: state.reviewMode && state.frozenMap ? state.frozenMap : state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
     }
-    function drawRobotMarker(ctx, map, canvas, robotPose) {
-      if (!robotPose || !Number.isFinite(robotPose.x) || !Number.isFinite(robotPose.y) || !map.resolution) return;
-      const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
-      const pixelsPerMeter = mapToCanvas(map, canvas).cell / map.resolution;
-      const length = clamp(0.58 * pixelsPerMeter, 20, 34);
-      const width = clamp(0.42 * pixelsPerMeter, 14, 24);
-      const heading = Number.isFinite(robotPose.yaw) ? robotPose.yaw : 0;
+    function drawRobotIcon(ctx, iconSize, heading) {
+      if (robotIcon.complete && robotIcon.naturalWidth > 0) {
+        ctx.save();
+        ctx.rotate(-heading + Math.PI / 2);
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize / 2, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.fillStyle = "#f7f8f7";
+        ctx.fillRect(-iconSize / 2, -iconSize / 2, iconSize, iconSize);
+        ctx.drawImage(robotIcon, -iconSize / 2, -iconSize / 2, iconSize, iconSize);
+        ctx.restore();
 
-      ctx.save();
-      ctx.translate(robot.x, robot.y);
+        ctx.save();
+        ctx.strokeStyle = "#66a8d9";
+        ctx.lineWidth = iconSize * 0.08;
+        ctx.beginPath();
+        ctx.arc(0, 0, iconSize / 2, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
+      const length = iconSize * 0.78;
+      const width = iconSize * 0.56;
       ctx.rotate(-heading);
       ctx.fillStyle = "#66a8d9";
       ctx.strokeStyle = "#eaf5fb";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = iconSize * 0.06;
       ctx.beginPath();
       ctx.moveTo(length * 0.52, 0);
       ctx.lineTo(length * 0.18, -width * 0.55);
@@ -1108,19 +1128,17 @@ INDEX_HTML = """<!doctype html>
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
+    }
+    function drawRobotMarker(ctx, map, canvas, robotPose) {
+      if (!robotPose || !Number.isFinite(robotPose.x) || !Number.isFinite(robotPose.y) || !map.resolution) return;
+      const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
+      const heading = Number.isFinite(robotPose.yaw) ? robotPose.yaw : 0;
+      const pixelsPerMeter = mapToCanvas(map, canvas).cell / map.resolution;
+      const iconSize = 0.35 * pixelsPerMeter;
 
-      ctx.fillStyle = "#0a0d0c";
-      ctx.fillRect(-length * 0.28, -width * 0.72, length * 0.16, width * 0.2);
-      ctx.fillRect(-length * 0.28, width * 0.52, length * 0.16, width * 0.2);
-      ctx.fillRect(length * 0.12, -width * 0.72, length * 0.16, width * 0.2);
-      ctx.fillRect(length * 0.12, width * 0.52, length * 0.16, width * 0.2);
-
-      ctx.strokeStyle = "#07110b";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(-length * 0.2, 0);
-      ctx.lineTo(length * 0.34, 0);
-      ctx.stroke();
+      ctx.save();
+      ctx.translate(robot.x, robot.y);
+      drawRobotIcon(ctx, iconSize, heading);
       ctx.restore();
 
       const label = [
@@ -2255,6 +2273,8 @@ class UiNode(Node):
                 parsed = urlparse(self.path)
                 if parsed.path in ("/", "/index.html", "/teleop"):
                     self._send_html()
+                elif parsed.path == "/assets/robot.png":
+                    self._send_robot_icon()
                 elif parsed.path == "/api/status":
                     self._send_json(node.status_payload(self.headers.get("Host", "")))
                 elif parsed.path == "/stream.mjpg":
@@ -2299,6 +2319,19 @@ class UiNode(Node):
                 content = INDEX_HTML.encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            def _send_robot_icon(self):
+                try:
+                    content = ROBOT_ICON_PATH.read_bytes()
+                except OSError:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=300")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
