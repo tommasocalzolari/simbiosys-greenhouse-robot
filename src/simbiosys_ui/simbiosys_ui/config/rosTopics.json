@@ -27,6 +27,7 @@
     "saveSafeMap": "/mapping/save_safe_map",
     "safeMapOutput": null,
     "takeControl": null,
+    "manualControlState": "simbiosys/ui/manual_control_active",
     "odom": "/mirte_base_controller/odom",
     "amclPose": "/amcl_pose",
     "plantHealth": "/plant_health",

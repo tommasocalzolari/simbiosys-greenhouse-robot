@@ -19,7 +19,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import BatteryState, CompressedImage
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 try:
@@ -47,6 +47,15 @@ CONFIG_PATH = Path(__file__).resolve().parent / "config" / "rosTopics.json"
 DEFAULT_WEB_HOST = "0.0.0.0"
 DEFAULT_WEB_PORT = 8080
 DEFAULT_TELEOP_QUEUE_DEPTH = 1
+BED_IDS = ("1", "2", "3")
+BED_TAG_TO_ID = {
+    18: "1",
+    10: "1",
+    13: "2",
+    2: "2",
+    24: "2",
+    16: "3",
+}
 DEFAULT_CONFIG = {
     "rosbridgeUrl": "ws://localhost:9090",
     "topics": {
@@ -76,6 +85,7 @@ DEFAULT_CONFIG = {
         "saveSafeMap": "/mapping/save_safe_map",
         "safeMapOutput": None,
         "takeControl": None,
+        "manualControlState": "simbiosys/ui/manual_control_active",
         "odom": "/mirte_base_controller/odom",
         "amclPose": "/amcl_pose",
         "plantHealth": "/plant_health",
@@ -1250,12 +1260,8 @@ INDEX_HTML = """<!doctype html>
       const color = String(plant.color || "").toLowerCase();
       if (color === "magenta") return "#d657c9";
       if (color === "light_pink") return "#f0a9cc";
-      if (color === "pink") return "#f0a9cc";
       if (color === "white") return "#edf5ef";
-      if (color === "yellow") return "#e1d35e";
-      if (color === "red") return "#e2685d";
-      if (color === "blue") return "#66a8d9";
-      return "#7eb7e6";
+      return "#edf5ef";
     }
     function plantBedSide(plant) {
       const direct = String(plant.bed_side || plant.bedSide || plant.side_letter || plant.zijkant || "").toLowerCase();
@@ -1840,6 +1846,15 @@ class UiNode(Node):
         self._cmd_vel_publisher = self.create_publisher(Twist, self._topics["cmdVel"], teleop_queue_depth)
         self._initial_pose_publisher = self.create_publisher(PoseWithCovarianceStamped, self._topics["initialPose"], 10) if self._topics.get("initialPose") else None
         self._goal_pose_publisher = self.create_publisher(PoseStamped, self._topics["goalPose"], 10) if self._topics.get("goalPose") else None
+        self._manual_control_publisher = None
+        if self._topics.get("manualControlState"):
+            manual_control_qos = QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
+            self._manual_control_publisher = self.create_publisher(Bool, self._topics["manualControlState"], manual_control_qos)
+            self._publish_manual_control_state()
         self._sync_camera_subscriptions()
         if self._topics.get("liveMap"):
             map_qos = QoSProfile(
@@ -2184,6 +2199,7 @@ class UiNode(Node):
         self._publish_twist(0.0, 0.0, 0.0)
         if self._safety_paused:
             self._manual_control_active = False
+            self._publish_manual_control_state()
             self._send_behavior_request(BehaviorType.IDLE if BehaviorType is not None else None)
         return {
             "ok": True,
@@ -2416,6 +2432,7 @@ class UiNode(Node):
         self._publish_twist(0.0, 0.0, 0.0)
         if self._safety_paused:
             self._manual_control_active = False
+            self._publish_manual_control_state()
             return {
                 "ok": False,
                 "manualControlActive": False,
@@ -2423,6 +2440,7 @@ class UiNode(Node):
             }
         if self._manual_control_active:
             self._manual_control_active = False
+            self._publish_manual_control_state()
             self._send_behavior_request(BehaviorType.IDLE if BehaviorType is not None else None)
             return {
                 "ok": True,
@@ -2434,6 +2452,7 @@ class UiNode(Node):
                 ),
             }
         self._manual_control_active = True
+        self._publish_manual_control_state()
         self._send_behavior_request(BehaviorType.TELEOP if BehaviorType is not None else None)
         return {
             "ok": True,
@@ -2771,21 +2790,21 @@ class UiNode(Node):
         except json.JSONDecodeError as exc:
             self.get_logger().warn(f"Ignoring invalid bed environment JSON: {exc}")
             return
-        bed_id = str(payload.get("bed_id", "")).strip()
+        bed_id = self._bed_id_from_payload(payload)
         if not bed_id:
-            self.get_logger().warn("Ignoring bed environment JSON without bed_id")
+            self.get_logger().warn("Ignoring bed environment JSON without known bed_id or tag_id")
             return
         bed = self._bed_observations.setdefault(
             bed_id,
             {
-                "bed_id": payload.get("bed_id"),
+                "bed_id": bed_id,
                 "co2": None,
                 "humidity": None,
                 "bugs_detected": None,
                 "available": True,
             },
         )
-        bed["bed_id"] = payload.get("bed_id", bed.get("bed_id"))
+        bed["bed_id"] = bed_id
         bed["available"] = True
         bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if "co2_ppm" in payload:
@@ -2802,20 +2821,35 @@ class UiNode(Node):
             bed["side_counts"] = copy.deepcopy(payload["side_counts"])
 
     def _on_bed_observation(self, msg) -> None:
-        bed_id = str(msg.bed_id)
+        tag_ids = []
+        for tag in getattr(msg, "tags", []):
+            try:
+                tag_ids.append(int(tag.id))
+            except (TypeError, ValueError):
+                continue
+        try:
+            tag_ids.append(int(msg.bed_id))
+        except (TypeError, ValueError):
+            pass
+        bed_id = self._bed_id_from_tags(tag_ids) or self._behavior_bed_key(msg.bed_id)
+        if bed_id not in BED_IDS:
+            self.get_logger().warn(f"Ignoring bed observation for unknown bed/tag: {msg.bed_id}")
+            return
         bed = self._bed_observations.setdefault(
             bed_id,
             {
-                "bed_id": msg.bed_id,
+                "bed_id": bed_id,
                 "co2": None,
                 "humidity": None,
                 "bugs_detected": None,
                 "available": True,
             },
         )
-        bed["bed_id"] = msg.bed_id
+        bed["bed_id"] = bed_id
         bed["available"] = True
         bed["last_seen"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if tag_ids:
+            bed["tag_ids"] = tag_ids
 
     def _on_mapping_status(self, msg) -> None:
         self._mapping_status = {
@@ -2888,7 +2922,31 @@ class UiNode(Node):
         bed_id = str(bed_id or "").strip()
         if ":" in bed_id:
             bed_id = bed_id.split(":", 1)[0].strip()
-        return bed_id
+        return bed_id if bed_id in BED_IDS else ""
+
+    def _bed_id_from_tags(self, tag_ids) -> str:
+        for tag_id in tag_ids:
+            try:
+                bed_id = BED_TAG_TO_ID.get(int(tag_id))
+            except (TypeError, ValueError):
+                continue
+            if bed_id:
+                return bed_id
+        return ""
+
+    def _bed_id_from_payload(self, payload: dict) -> str:
+        bed_id = self._behavior_bed_key(payload.get("bed_id"))
+        if bed_id:
+            return bed_id
+
+        tag_values = []
+        for key in ("tag_id", "tag", "apriltag_id", "april_tag_id"):
+            if key in payload:
+                tag_values.append(payload[key])
+        tags = payload.get("tags")
+        if isinstance(tags, list):
+            tag_values.extend(tags)
+        return self._bed_id_from_tags(tag_values)
 
     def _time_msg_to_iso(self, msg) -> str:
         seconds = int(msg.sec)
@@ -2915,10 +2973,10 @@ class UiNode(Node):
         return updated
 
     def _compartment_payloads(self, payload: dict) -> list[dict]:
-        bed_id = payload.get("bed_id")
+        bed_id = self._bed_id_from_payload(payload)
         sections = payload.get("sections", payload.get("compartments", payload.get("vakken")))
         if isinstance(sections, list):
-            return [dict({"bed_id": bed_id}, **section) for section in sections if isinstance(section, dict)]
+            return [dict(section, bed_id=bed_id) for section in sections if isinstance(section, dict)]
 
         bed_side = self._normalized_bed_side(payload)
         nested = []
@@ -2926,13 +2984,13 @@ class UiNode(Node):
             for lane in ("left", "right"):
                 value = payload.get(lane)
                 if isinstance(value, dict):
-                    nested.append(dict({"bed_id": bed_id, "bed_side": bed_side, "lane": lane}, **value))
+                    nested.append(dict(value, bed_id=bed_id, bed_side=bed_side, lane=lane))
         if nested:
             return nested
         return [payload]
 
     def _update_compartment_section(self, payload: dict) -> bool:
-        bed_id = str(payload.get("bed_id", "")).strip()
+        bed_id = self._bed_id_from_payload(payload)
         bed_side = self._normalized_bed_side(payload)
         lane = self._normalized_lane(payload)
         if not bed_id or not bed_side or not lane:
@@ -3091,6 +3149,13 @@ class UiNode(Node):
         twist.angular.z = max(-MAX_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, angular_z))
         self._cmd_vel_publisher.publish(twist)
 
+    def _publish_manual_control_state(self) -> None:
+        if self._manual_control_publisher is None:
+            return
+        msg = Bool()
+        msg.data = bool(self._manual_control_active)
+        self._manual_control_publisher.publish(msg)
+
     def _send_behavior_request(self, behavior_type) -> None:
         if behavior_type is None or self._behavior_client is None:
             return
@@ -3101,7 +3166,22 @@ class UiNode(Node):
         self._behavior_client.send_goal_async(goal)
 
     def _bed_payload(self) -> list[dict]:
-        beds = copy.deepcopy(list(self._bed_observations.values()))
+        beds_by_id = {
+            bed_id: {
+                "bed_id": bed_id,
+                "co2": None,
+                "humidity": None,
+                "bugs_detected": None,
+                "available": False,
+            }
+            for bed_id in BED_IDS
+        }
+        for bed_id, bed in self._bed_observations.items():
+            bed_id = str(bed_id)
+            if bed_id in beds_by_id:
+                beds_by_id[bed_id].update(copy.deepcopy(bed))
+
+        beds = list(beds_by_id.values())
         for bed in beds:
             bed_plants = [
                 copy.deepcopy(plant)
@@ -3117,7 +3197,7 @@ class UiNode(Node):
                     if bed_side in compartment_counts and lane in compartment_counts[bed_side]:
                         compartment_counts[bed_side][lane] += 1
                 bed["compartment_counts"] = compartment_counts
-        return sorted(beds, key=lambda bed: str(bed.get("bed_id", "")))
+        return sorted(beds, key=lambda bed: int(bed.get("bed_id", 0)))
 
     def _computed_report(self) -> dict:
         plants = list(self._plants.values())
@@ -3145,6 +3225,8 @@ def main(args=None) -> None:
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node._manual_control_active = False
+        node._publish_manual_control_state()
         node.destroy_node()
         try:
             rclpy.shutdown()
