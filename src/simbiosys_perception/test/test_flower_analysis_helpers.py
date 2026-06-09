@@ -158,20 +158,12 @@ def test_build_message_only_publishes_dominant_color_detections():
     assert "filtered_from=3" in flower_data.message
 
 
-def test_bed_one_scan_position_one_maps_to_left_lane():
+def test_scan_position_without_explicit_lane_has_no_fallback():
     scan_position = ScanPosition()
     scan_position.scan_position_id = "bed_1_a_1"
     scan_position.bed_id = "1"
 
-    assert FlowerDetectionNode._lane_for_scan(scan_position) == "left"
-
-
-def test_bed_three_scan_position_one_also_maps_to_left_lane():
-    scan_position = ScanPosition()
-    scan_position.scan_position_id = "bed_3_a_1"
-    scan_position.bed_id = "3"
-
-    assert FlowerDetectionNode._lane_for_scan(scan_position) == "left"
+    assert FlowerDetectionNode._lane_for_scan(scan_position) == ""
 
 
 def test_explicit_request_lane_overrides_scan_suffix():

@@ -107,10 +107,10 @@ controller_server:
       simulate_ahead_time: 0.6
       rotate_to_goal_heading: true
       debug_trajectory_details: false
-      min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
-      min_vel_y: -0.28         # allow rightward strafing at the shared minimum speed
+      min_vel_x: 0.0        # avoid very small forward commands; backup is handled by the BackUp behavior
+      min_vel_y: -0.35         # allow rightward strafing at the shared minimum speed
       max_vel_x: 0.325         # approximately 25% above the original tuning
-      max_vel_y: 0.28          # allow leftward strafing at the shared minimum speed
+      max_vel_y: 0.35          # allow leftward strafing at the shared minimum speed
       max_vel_theta: 1.25      # stronger turns in tight spaces
       # Shared minimum translational magnitude for forward/backward and left/right motion.
       min_speed_xy: 0.20

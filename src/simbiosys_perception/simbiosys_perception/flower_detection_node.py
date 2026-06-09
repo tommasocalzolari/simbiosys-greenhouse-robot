@@ -750,17 +750,6 @@ class FlowerDetectionNode(Node):
         if request_id.endswith("lane=left"):
             return "left"
 
-        scan_position_id = str(
-            getattr(scan_position, "scan_position_id", "") or ""
-        ).strip()
-        try:
-            position_in_side = int(scan_position_id.rsplit("_", 1)[1])
-        except (IndexError, ValueError):
-            return ""
-        if position_in_side == 1:
-            return "left"
-        if position_in_side == 2:
-            return "right"
         return ""
 
     def _flower_id_for_scan(self, scan_position, side: str) -> str:
