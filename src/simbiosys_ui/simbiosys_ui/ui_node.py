@@ -1,4 +1,5 @@
 import copy
+import ast
 import json
 import math
 import os
@@ -196,6 +197,8 @@ INDEX_HTML = """<!doctype html>
       min-height: 300px;
       display: block;
       background: #0a0d0c;
+      cursor: crosshair;
+      touch-action: none;
     }
     .page { display: none; }
     .page.active { display: grid; gap: 14px; }
@@ -369,6 +372,18 @@ INDEX_HTML = """<!doctype html>
     .plant-notes {
       margin: 8px 0 0;
       color: var(--muted);
+    }
+    .plant-warning-list {
+      display: grid;
+      gap: 4px;
+      margin-top: 10px;
+      color: #ff6b5f;
+      font-size: 0.84rem;
+      font-weight: 700;
+    }
+    .plant-warning-list p {
+      margin: 0;
+      overflow-wrap: anywhere;
     }
     .plant-detail-panel {
       min-height: 118px;
@@ -606,6 +621,7 @@ INDEX_HTML = """<!doctype html>
       lastCandidateStamp: null,
       lastPlanStamp: null,
       selectedMapTarget: null,
+      mapTargetDrag: null,
       navigationActive: false,
       selectedPlantId: null,
       manualControlActive: false,
@@ -1024,6 +1040,12 @@ INDEX_HTML = """<!doctype html>
       while (degrees <= -180) degrees += 360;
       return `${Math.round(degrees)}deg`;
     }
+    function updateSelectedTargetLabel() {
+      const target = state.selectedMapTarget;
+      document.getElementById("selected-target").textContent = target
+        ? `Selected ${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${yawDegrees(Number(target.yaw) || 0)}`
+        : "No target selected";
+    }
     function drawRobotMarker(ctx, map, canvas, robotPose) {
       if (!robotPose || !Number.isFinite(robotPose.x) || !Number.isFinite(robotPose.y) || !map.resolution) return;
       const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
@@ -1111,6 +1133,8 @@ INDEX_HTML = """<!doctype html>
       }
       if (selectedTarget) {
         const target = worldToCanvas(map, canvas, selectedTarget.x, selectedTarget.y);
+        const yaw = Number(selectedTarget.yaw) || 0;
+        const arrowLength = 28;
         ctx.strokeStyle = "#e1b94b";
         ctx.lineWidth = 3;
         ctx.beginPath();
@@ -1122,6 +1146,14 @@ INDEX_HTML = """<!doctype html>
         ctx.moveTo(target.x, target.y - 14);
         ctx.lineTo(target.x, target.y + 14);
         ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(target.x, target.y);
+        ctx.lineTo(target.x + Math.cos(yaw) * arrowLength, target.y - Math.sin(yaw) * arrowLength);
+        ctx.stroke();
+        ctx.fillStyle = "#e1b94b";
+        ctx.beginPath();
+        ctx.arc(target.x + Math.cos(yaw) * arrowLength, target.y - Math.sin(yaw) * arrowLength, 4, 0, Math.PI * 2);
+        ctx.fill();
       }
       const planPoints = navPlan && Array.isArray(navPlan.points) ? navPlan.points : [];
       if (planPoints.length >= 2) {
@@ -1138,21 +1170,59 @@ INDEX_HTML = """<!doctype html>
       drawCandidateOverlays(ctx, map, canvas);
     }
 
-    document.getElementById("dashboard-map-canvas").addEventListener("click", (event) => {
+    function mapEventWorld(event) {
       if (!state.latestMap) return;
       const canvas = event.currentTarget;
       const rect = canvas.getBoundingClientRect();
-      const target = canvasToWorld(
+      return canvasToWorld(
         state.latestMap,
         canvas,
         (event.clientX - rect.left) * (canvas.width / rect.width),
         (event.clientY - rect.top) * (canvas.height / rect.height)
       );
+    }
+    function setSelectedMapTarget(target, yaw = null) {
       if (!target) return;
-      state.selectedMapTarget = target;
-      document.getElementById("selected-target").textContent = `Selected ${target.x.toFixed(2)}, ${target.y.toFixed(2)}`;
+      state.selectedMapTarget = {
+        x: target.x,
+        y: target.y,
+        yaw: Number.isFinite(yaw) ? yaw : (Number.isFinite(state.latestRobotPose?.yaw) ? state.latestRobotPose.yaw : 0),
+      };
+      updateSelectedTargetLabel();
       updateSafetyButton();
       renderMaps({map: state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
+    }
+    document.getElementById("dashboard-map-canvas").addEventListener("pointerdown", (event) => {
+      const target = mapEventWorld(event);
+      if (!target) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      state.mapTargetDrag = {x: target.x, y: target.y, yaw: null};
+      setSelectedMapTarget(target);
+    });
+    document.getElementById("dashboard-map-canvas").addEventListener("pointermove", (event) => {
+      if (!state.mapTargetDrag) return;
+      const current = mapEventWorld(event);
+      if (!current) return;
+      const dx = current.x - state.mapTargetDrag.x;
+      const dy = current.y - state.mapTargetDrag.y;
+      if (Math.hypot(dx, dy) < 0.03) return;
+      state.mapTargetDrag.yaw = Math.atan2(dy, dx);
+      setSelectedMapTarget({x: state.mapTargetDrag.x, y: state.mapTargetDrag.y}, state.mapTargetDrag.yaw);
+    });
+    document.getElementById("dashboard-map-canvas").addEventListener("pointerup", (event) => {
+      if (state.mapTargetDrag && Number.isFinite(state.mapTargetDrag.yaw)) {
+        setSelectedMapTarget({x: state.mapTargetDrag.x, y: state.mapTargetDrag.y}, state.mapTargetDrag.yaw);
+      }
+      state.mapTargetDrag = null;
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch (_error) {}
+    });
+    document.getElementById("dashboard-map-canvas").addEventListener("pointercancel", (event) => {
+      state.mapTargetDrag = null;
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch (_error) {}
     });
     document.getElementById("navigate-target").addEventListener("click", async () => {
       if (!state.selectedMapTarget) return;
@@ -1389,6 +1459,25 @@ INDEX_HTML = """<!doctype html>
       }
       plot.appendChild(item);
     }
+    function plantWarningText(plant) {
+      const warning = plant.warning == null ? "" : String(plant.warning).trim();
+      return warning;
+    }
+    function renderBedPlantWarnings(card, bed, bedPlants) {
+      const warnings = (bedPlants || [])
+        .map((plant) => ({plant, warning: plantWarningText(plant)}))
+        .filter((item) => item.warning);
+      if (!warnings.length) return;
+
+      const list = document.createElement("div");
+      list.className = "plant-warning-list";
+      warnings.forEach(({plant, warning}) => {
+        const item = document.createElement("p");
+        item.textContent = `${plantDisplayLabel(bed, plant)}: ${warning}`;
+        list.appendChild(item);
+      });
+      card.appendChild(list);
+    }
     function selectedPlantRecord(data) {
       for (const bed of data.beds || []) {
         const plant = (bed.plants || []).find((candidate) => candidate.flower_id === state.selectedPlantId);
@@ -1443,6 +1532,7 @@ INDEX_HTML = """<!doctype html>
         `;
         const plot = card.querySelector(".bed-plot");
         bedCompartments(bedPlants).forEach((section) => renderCompartment(plot, section, bed, data));
+        renderBedPlantWarnings(card, bed, bedPlants);
         const inspectButton = card.querySelector(".inspect-bed");
         inspectButton.disabled = state.safetyPaused || !data.behaviorAvailable;
         inspectButton.addEventListener("click", async () => {
@@ -2257,10 +2347,10 @@ class UiNode(Node):
             return self._last_navigation_message
         if self._action_ready(self._nav2_client):
             return "Nav2 NavigateToPose backend available"
-        if self._goal_pose_publisher is not None:
-            return "Goal pose publisher available"
         if self._action_ready(self._behavior_client):
             return "Behavior navigation backend available"
+        if self._goal_pose_publisher is not None:
+            return "Goal pose publisher available"
         return "Navigation backend unavailable"
 
     def _normalized_pose(self, payload) -> dict | None:
@@ -2306,24 +2396,23 @@ class UiNode(Node):
             self._last_navigation_message = f"Sent Nav2 goal to {label}"
             return {"ok": True, "message": self._last_navigation_message}
 
+        if self._behavior_client is not None and BehaviorType is not None and self._behavior_client.server_is_ready():
+            goal = ExecuteBehavior.Goal()
+            goal.behavior.type = BehaviorType.NAVIGATE
+            goal.target_pose.position.x = pose["x"]
+            goal.target_pose.position.y = pose["y"]
+            goal.target_pose.position.z = 0.0
+            goal.target_pose.orientation = quaternion_from_yaw(pose.get("yaw", 0.0))
+            self._behavior_client.send_goal_async(goal)
+            self._last_navigation_message = f"Navigation goal for {label} sent to behavior action"
+            return {"ok": True, "message": self._last_navigation_message}
+
         if self._goal_pose_publisher is not None:
             self._goal_pose_publisher.publish(self._pose_stamped(pose))
             self._last_navigation_message = f"Published goal pose for {label}"
             return {"ok": True, "message": self._last_navigation_message}
 
-        if self._behavior_client is None or BehaviorType is None:
-            return {"ok": False, "message": "Navigation backend unavailable"}
-        if not self._behavior_client.server_is_ready():
-            return {"ok": False, "message": "Navigation backend unavailable"}
-        goal = ExecuteBehavior.Goal()
-        goal.behavior.type = BehaviorType.NAVIGATE
-        goal.target_pose.position.x = pose["x"]
-        goal.target_pose.position.y = pose["y"]
-        goal.target_pose.position.z = 0.0
-        goal.target_pose.orientation = quaternion_from_yaw(pose.get("yaw", 0.0))
-        self._behavior_client.send_goal_async(goal)
-        self._last_navigation_message = f"Navigation goal for {label} sent to behavior action"
-        return {"ok": True, "message": self._last_navigation_message}
+        return {"ok": False, "message": "Navigation backend unavailable"}
 
     def _on_nav2_feedback(self, label: str, feedback_msg) -> None:
         feedback = getattr(feedback_msg, "feedback", None)
@@ -2756,6 +2845,11 @@ class UiNode(Node):
             "notes": msg.notes,
             "position": {"x": msg.position.x, "y": msg.position.y, "z": msg.position.z},
         }
+        warning = str(getattr(msg, "warning", "")).strip()
+        if not warning:
+            warning = self._first_warning_from_text(msg.notes)
+        if warning:
+            payload["warning"] = warning
         side = self._side_from_notes(msg.notes)
         if side:
             payload["side"] = side
@@ -2957,9 +3051,13 @@ class UiNode(Node):
 
     def _update_plant_from_payload(self, flower_id: str, payload: dict) -> None:
         plant = self._plants.setdefault(flower_id, {"flower_id": flower_id})
-        for key in ("bed_id", "side", "bed_side", "lane", "section", "compartment", "vak", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position"):
+        for key in ("bed_id", "side", "bed_side", "lane", "section", "compartment", "vak", "height_cm", "color", "health", "growth_stage", "confidence", "last_scan_time", "notes", "position", "warning"):
             if key in payload:
                 plant[key] = payload[key]
+        if "warning" not in payload:
+            warning = self._first_warning_from_text(payload.get("notes", payload.get("message", "")))
+            if warning:
+                plant["warning"] = warning
         for key in ("bug_detected", "flower_detected", "ready_for_harvest"):
             if key in payload:
                 plant[key] = bool(payload[key])
@@ -3001,6 +3099,11 @@ class UiNode(Node):
             return False
 
         color = str(payload.get("color", payload.get("flower_color", payload.get("kleur", "")))).strip()
+        warnings = self._warning_list_from_payload(payload)
+        if len(warnings) != len(heights):
+            height_warnings = self._warnings_from_heights(heights)
+            if any(height_warnings):
+                warnings = height_warnings
         last_scan_time = str(payload.get("last_scan_time", payload.get("timestamp", ""))).strip()
         if not last_scan_time:
             last_scan_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -3025,7 +3128,7 @@ class UiNode(Node):
 
         for index, height in enumerate(heights, start=1):
             flower_id = f"{prefix}{index:02d}"
-            self._plants[flower_id] = {
+            plant = {
                 "flower_id": flower_id,
                 "bed_id": bed_id,
                 "bed_side": bed_side,
@@ -3036,7 +3139,60 @@ class UiNode(Node):
                 "last_scan_time": last_scan_time,
                 "notes": f"bed_side:{bed_side} lane:{lane}",
             }
+            if index - 1 < len(warnings) and warnings[index - 1]:
+                plant["warning"] = warnings[index - 1]
+            self._plants[flower_id] = plant
         return True
+
+    def _warning_list_from_payload(self, payload: dict) -> list[str]:
+        raw = payload.get("warnings", payload.get("warning", payload.get("height_warnings")))
+        if raw is None and isinstance(payload.get("flowers"), list):
+            raw = [
+                flower.get("warning", flower.get("height_warning", ""))
+                for flower in payload["flowers"]
+                if isinstance(flower, dict)
+            ]
+        if raw is None:
+            raw = self._warnings_from_text(payload.get("message", payload.get("notes", "")))
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            parsed = self._warnings_from_text(raw)
+            raw = parsed if parsed is not None else [raw]
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(warning).strip() for warning in raw]
+
+    def _first_warning_from_text(self, text) -> str:
+        warnings = self._warnings_from_text(text)
+        return warnings[0] if warnings else ""
+
+    def _warnings_from_text(self, text) -> list[str] | None:
+        text = str(text or "")
+        marker = "warnings="
+        if marker not in text:
+            return None
+        raw = text.split(marker, 1)[1].strip()
+        if ";" in raw:
+            raw = raw.split(";", 1)[0].strip()
+        try:
+            parsed = ast.literal_eval(raw)
+        except (SyntaxError, ValueError):
+            return [raw] if raw else []
+        if isinstance(parsed, list):
+            return [str(warning).strip() for warning in parsed]
+        return [str(parsed).strip()] if parsed else []
+
+    def _warnings_from_heights(self, heights: list[float]) -> list[str]:
+        warnings = []
+        for height in heights:
+            if height <= 5.7:
+                warnings.append("Low flower detection, probably flower detection from row behind!")
+            elif height >= 8.8:
+                warnings.append("Max flower height detected of 8.8cm so probably higher, inspect with wrist camera for accurate analysis!")
+            else:
+                warnings.append("")
+        return warnings
 
     def _normalized_bed_side(self, payload: dict) -> str:
         for key in ("bed_side", "bedSide", "side_letter", "zijkant"):
