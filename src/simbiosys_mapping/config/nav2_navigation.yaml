@@ -95,8 +95,8 @@ controller_server:
       plugin: nav2_rotation_shim_controller::RotationShimController
       primary_controller: dwb_core::DWBLocalPlanner
       # Rotate in place to align with the first part of the global path before driving.
-      angular_dist_threshold: 0.2       # rad; align to path already from ~14 deg heading error
-      angular_disengage_threshold: 0.06  #makes the robot rotate until heading error is small
+      angular_dist_threshold: 0.3       # rad; align to path already from ~14 deg heading error
+      angular_disengage_threshold: 0.1  #makes the robot rotate until heading error is small
       forward_sampling_distance: 0.25    # m; look only a short distance ahead in this small map
       rotate_to_heading_angular_vel: 0.69 # rad/s; approximately 25% above the original tuning
       # DWB's min_speed_theta does not apply while this shim performs initial/final turns.
@@ -110,14 +110,14 @@ controller_server:
       min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
       min_vel_y: -0.20         # allow rightward strafing at the shared minimum speed
       max_vel_x: 0.325         # approximately 25% above the original tuning
-      max_vel_y: 0.20          # allow leftward strafing at the shared minimum speed
+      max_vel_y: 0.28          # allow leftward strafing at the shared minimum speed
       max_vel_theta: 1.25      # stronger turns in tight spaces
       # Shared minimum translational magnitude for forward/backward and left/right motion.
       min_speed_xy: 0.20
       max_speed_xy: 0.325      # cap combined x/y speed while still allowing lateral motion
       min_speed_theta: 0.5625   # 25% above the observed 0.45 rad/s rotational minimum
       acc_lim_x: 0.50
-      acc_lim_y: 0.375         # lateral acceleration limit for smooth strafing
+      acc_lim_y: 0.45         # lateral acceleration limit for smooth strafing
       acc_lim_theta: 2.0       # stronger angular acceleration for initial turns/corners
       decel_lim_x: -0.44       # firmer braking without being abrupt
       decel_lim_y: -0.375      # lateral braking limit
@@ -125,7 +125,7 @@ controller_server:
       vx_samples: 12
       vy_samples: 7            # sample lateral trajectories instead of only forward/turning
       vtheta_samples: 32
-      sim_time: 0.6
+      sim_time: 0.9
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -135,9 +135,9 @@ controller_server:
       stateful: true
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.06
-      PathAlign.scale: 12.0
+      PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 10.0
+      GoalAlign.scale: 6.0
       GoalAlign.forward_point_distance: 0.1
       PathDist.scale: 14.0
       GoalDist.scale: 12.0
