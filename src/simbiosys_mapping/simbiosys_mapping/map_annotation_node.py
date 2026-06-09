@@ -302,19 +302,8 @@ class MapAnnotationNode(Node):
             "frame_id": self._string_parameter("annotation_frame"),
             "home_pose": self._pose_to_dict(self._home_pose),
             "checkpoints": checkpoints,
-            # Compatibility for older code that expected flower_beds.
-            "flower_beds": [
-                {
-                    "bed_id": checkpoint["checkpoint_id"],
-                    "frame_id": checkpoint["frame_id"],
-                    "start_pose": checkpoint["pose"],
-                    "start_position": checkpoint["position"],
-                    "orientation": checkpoint["orientation"],
-                    "yaw": checkpoint["yaw"],
-                }
-                for checkpoint in checkpoints
-            ],
-            "final_pose": checkpoints[-1]["pose"] if checkpoints else None,
+            # Compatibility only: final is not an annotated target anymore.
+            "final_pose": self._pose_to_dict(self._home_pose),
         }
         annotations_path.write_text(
             json.dumps(annotations, indent=2),

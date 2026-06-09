@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 from pathlib import Path
@@ -5,11 +6,13 @@ from typing import Any
 
 import rclpy
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 class CheckpointNavigatorNode(Node):
@@ -23,6 +26,15 @@ class CheckpointNavigatorNode(Node):
         self.declare_parameter("status_topic", "/checkpoint_status")
         self.declare_parameter("nav2_action_name", "/navigate_to_pose")
         self.declare_parameter("nav2_server_timeout_sec", 5.0)
+        self.declare_parameter("publish_markers", True)
+        self.declare_parameter("marker_topic", "/map_annotations")
+        self.declare_parameter("marker_publish_period", 2.0)
+        self.declare_parameter("publish_initial_pose", True)
+        self.declare_parameter("initial_pose_topic", "/initialpose")
+        self.declare_parameter("initial_pose_publish_period", 1.0)
+        self.declare_parameter("initial_pose_publish_count", 10)
+        self.declare_parameter("initial_pose_covariance_xy", 0.25)
+        self.declare_parameter("initial_pose_covariance_yaw", 0.0685)
 
         self._route: list[dict[str, Any]] = []
         self._home_pose: PoseStamped | None = None
@@ -30,6 +42,7 @@ class CheckpointNavigatorNode(Node):
         self._active_goal_handle = None
         self._active_target: dict[str, Any] | None = None
         self._state = "starting"
+        self._initial_pose_remaining = 0
 
         self._nav2_client = ActionClient(
             self,
@@ -41,6 +54,21 @@ class CheckpointNavigatorNode(Node):
             self._string_parameter("status_topic"),
             10,
         )
+        marker_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._marker_pub = self.create_publisher(
+            MarkerArray,
+            self._string_parameter("marker_topic"),
+            marker_qos,
+        )
+        self._initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped,
+            self._string_parameter("initial_pose_topic"),
+            10,
+        )
         self.create_subscription(
             String,
             self._string_parameter("command_topic"),
@@ -49,7 +77,18 @@ class CheckpointNavigatorNode(Node):
         )
 
         self._load_route()
+        self._reset_initial_pose_publishing()
         self._state = "waiting"
+        self._publish_markers()
+        self._publish_initial_pose()
+        self._marker_timer = self.create_timer(
+            self._double_parameter("marker_publish_period"),
+            self._publish_markers,
+        )
+        self._initial_pose_timer = self.create_timer(
+            self._double_parameter("initial_pose_publish_period"),
+            self._publish_initial_pose,
+        )
         self._publish_status(
             "ready",
             "Checkpoint navigator ready. Send 'next' on /checkpoint_commands.",
@@ -60,6 +99,17 @@ class CheckpointNavigatorNode(Node):
 
     def _double_parameter(self, name: str) -> float:
         return self.get_parameter(name).get_parameter_value().double_value
+
+    def _bool_parameter(self, name: str) -> bool:
+        value = self.get_parameter(name).value
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes")
+        return bool(value)
+
+    def _int_parameter(self, name: str) -> int:
+        return int(self.get_parameter(name).value)
 
     def _on_command(self, msg: String) -> None:
         command = msg.data.strip().lower()
@@ -78,6 +128,9 @@ class CheckpointNavigatorNode(Node):
             self._load_route()
             self._next_index = 0
             self._state = "waiting"
+            self._reset_initial_pose_publishing()
+            self._publish_markers()
+            self._publish_initial_pose()
             self._publish_status("reloaded", "Reloaded annotations and reset route.")
         elif command == "reset":
             if self._active_goal_handle is not None:
@@ -264,12 +317,6 @@ class CheckpointNavigatorNode(Node):
                     }
                 )
 
-            final_pose = annotations.get("final_pose")
-            if final_pose is not None:
-                route.append(
-                    {"label": "final_pose", "pose": self._pose_from_dict(final_pose)}
-                )
-
         if not route:
             raise RuntimeError(f"No checkpoints found in {annotations_path}")
 
@@ -277,6 +324,136 @@ class CheckpointNavigatorNode(Node):
         self.get_logger().info(
             f"Loaded {len(self._route)} checkpoint targets from {annotations_path}"
         )
+
+    def _reset_initial_pose_publishing(self) -> None:
+        self._initial_pose_remaining = self._int_parameter(
+            "initial_pose_publish_count"
+        )
+
+    def _publish_initial_pose(self) -> None:
+        if not self._bool_parameter("publish_initial_pose"):
+            return
+        if self._home_pose is None or self._initial_pose_remaining <= 0:
+            return
+
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = self._home_pose.header.frame_id or "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose = copy.deepcopy(self._home_pose.pose)
+
+        covariance_xy = self._double_parameter("initial_pose_covariance_xy")
+        covariance_yaw = self._double_parameter("initial_pose_covariance_yaw")
+        msg.pose.covariance[0] = covariance_xy
+        msg.pose.covariance[7] = covariance_xy
+        msg.pose.covariance[35] = covariance_yaw
+
+        self._initial_pose_pub.publish(msg)
+        self._initial_pose_remaining -= 1
+        self.get_logger().info(
+            "Published AMCL initial pose from home_pose "
+            f"x={msg.pose.pose.position.x:.3f}, y={msg.pose.pose.position.y:.3f}"
+        )
+
+    def _publish_markers(self) -> None:
+        if not self._bool_parameter("publish_markers"):
+            return
+
+        markers = MarkerArray()
+        delete_all = Marker()
+        delete_all.action = Marker.DELETEALL
+        markers.markers.append(delete_all)
+
+        marker_id = 0
+        if self._home_pose is not None:
+            home_markers = self._pose_markers(
+                marker_id,
+                self._home_pose,
+                "home",
+                0.0,
+                0.75,
+                0.15,
+            )
+            markers.markers.extend(home_markers)
+            marker_id += len(home_markers)
+
+        for index, target in enumerate(self._route, start=1):
+            checkpoint_markers = self._pose_markers(
+                marker_id,
+                target["pose"],
+                str(index),
+                0.1,
+                0.25,
+                1.0,
+            )
+            markers.markers.extend(checkpoint_markers)
+            marker_id += len(checkpoint_markers)
+
+        self._marker_pub.publish(markers)
+
+    def _pose_markers(
+        self,
+        marker_id: int,
+        pose_msg: PoseStamped,
+        label: str,
+        red: float,
+        green: float,
+        blue: float,
+    ) -> list[Marker]:
+        frame_id = pose_msg.header.frame_id or "map"
+        stamp = self.get_clock().now().to_msg()
+
+        arrow = Marker()
+        arrow.header.frame_id = frame_id
+        arrow.header.stamp = stamp
+        arrow.ns = "checkpoint_pose_arrows"
+        arrow.id = marker_id
+        arrow.type = Marker.ARROW
+        arrow.action = Marker.ADD
+        arrow.pose = copy.deepcopy(pose_msg.pose)
+        arrow.scale.x = 0.35
+        arrow.scale.y = 0.06
+        arrow.scale.z = 0.06
+        arrow.color.r = red
+        arrow.color.g = green
+        arrow.color.b = blue
+        arrow.color.a = 1.0
+
+        pin = Marker()
+        pin.header.frame_id = frame_id
+        pin.header.stamp = stamp
+        pin.ns = "checkpoint_pose_pins"
+        pin.id = marker_id + 1
+        pin.type = Marker.SPHERE
+        pin.action = Marker.ADD
+        pin.pose.position = copy.deepcopy(pose_msg.pose.position)
+        pin.pose.position.z += 0.03
+        pin.pose.orientation.w = 1.0
+        pin.scale.x = 0.14
+        pin.scale.y = 0.14
+        pin.scale.z = 0.14
+        pin.color.r = red
+        pin.color.g = green
+        pin.color.b = blue
+        pin.color.a = 1.0
+
+        text = Marker()
+        text.header.frame_id = frame_id
+        text.header.stamp = stamp
+        text.ns = "checkpoint_pose_labels"
+        text.id = marker_id + 2
+        text.type = Marker.TEXT_VIEW_FACING
+        text.action = Marker.ADD
+        text.pose.position = copy.deepcopy(pose_msg.pose.position)
+        text.pose.position.z += 0.3
+        text.pose.orientation.w = 1.0
+        text.scale.z = 0.28
+        text.color.r = red
+        text.color.g = green
+        text.color.b = blue
+        text.color.a = 1.0
+        text.text = label
+
+        return [arrow, pin, text]
 
     def _legacy_bed_pose(self, bed: dict[str, Any]) -> dict[str, Any]:
         position = bed.get("start_position", {})

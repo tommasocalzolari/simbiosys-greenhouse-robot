@@ -194,25 +194,34 @@ ros2 run tf2_ros tf2_echo odom base_link
 Checkpoint navigation uses `maps/mirte_map_annotations.json`. It sends one Nav2
 goal at a time. It does not plan the whole route in advance.
 
-Terminal 1: start normal navigation first.
+Terminal 1: start normal navigation first. Use `start_rviz:=false` here because
+checkpoint navigation opens RViz itself.
 
 ```bash
-ros2 launch simbiosys_mapping navigation.launch.py simulation:=false
+ros2 launch simbiosys_mapping navigation.launch.py simulation:=false start_rviz:=false
 ```
 
 For simulation, use this instead:
 
 ```bash
-ros2 launch simbiosys_mapping navigation.launch.py simulation:=true
+ros2 launch simbiosys_mapping navigation.launch.py simulation:=true start_rviz:=false
 ```
-
-Set the initial pose manually in RViz with `2D Pose Estimate`.
 
 Terminal 2: start checkpoint navigation.
 
 ```bash
 ros2 launch simbiosys_mapping checkpoint_navigation.launch.py
 ```
+
+For simulation, use:
+
+```bash
+ros2 launch simbiosys_mapping checkpoint_navigation.launch.py use_sim_time:=true
+```
+
+This opens RViz, shows the map annotations from `maps/mirte_map_annotations.json`,
+and publishes AMCL's initial pose from `home_pose`. No manual `2D Pose Estimate`
+is needed for checkpoint navigation.
 
 If you want to use a different annotation file:
 
@@ -244,14 +253,39 @@ Watch checkpoint status:
 ros2 topic echo /checkpoint_status
 ```
 
+Useful checks while checkpoint navigation is running:
+
+```bash
+ros2 topic echo /amcl_pose --once
+ros2 topic echo /map_annotations --once
+ros2 topic echo /mirte_base_controller/cmd_vel --once
+ros2 action info /navigate_to_pose
+```
+
 Expected route:
 
 ```text
-home pose -> checkpoint 1 -> checkpoint 2 -> ... -> final checkpoint
+home pose -> checkpoint 1 -> checkpoint 2 -> ...
 ```
 
 The robot is placed manually at the home pose; it does not need to drive there
 automatically before the first checkpoint command.
+
+Checkpoint navigation behavior:
+
+- `checkpoint_navigation.launch.py` publishes `/initialpose` from `home_pose`.
+- It publishes numbered markers on `/map_annotations`.
+- It waits for `/checkpoint_commands`.
+- Each `next` command sends exactly one Nav2 `NavigateToPose` goal.
+- It does not include `final_pose` as a target; only `checkpoints` are visited.
+
+Current navigation parameter notes:
+
+- The controller is holonomic: `vy_samples` is enabled and `linear.y` can be used.
+- `min_speed_xy` is nonzero so commands are less likely to fall below motor deadband.
+- Rotation is tuned to be stronger than the observed angular deadband.
+- The global costmap is cautious and prefers paths farther from obstacles.
+- If strafing feels weak on the robot, the first value to review is `max_vel_y`.
 
 ## Important Files
 
@@ -277,3 +311,6 @@ maps/mirte_map.yaml                      default map metadata
 maps/mirte_map.pgm                       default map image
 maps/mirte_map_annotations.json          home/checkpoint annotations
 ```
+
+ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+  --ros-args -r cmd_vel:=/mirte_base_controller/cmd_vel_unstamped
