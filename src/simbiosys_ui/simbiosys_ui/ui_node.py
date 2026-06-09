@@ -65,6 +65,10 @@ BED_TAG_TO_ID = {
     24: "2",
     16: "3",
 }
+BED_ID_TO_TAGS = {
+    bed_id: tuple(tag for tag, mapped_bed_id in BED_TAG_TO_ID.items() if mapped_bed_id == bed_id)
+    for bed_id in BED_IDS
+}
 DEFAULT_CONFIG = {
     "rosbridgeUrl": "ws://localhost:9090",
     "topics": {
@@ -1658,6 +1662,7 @@ INDEX_HTML = """<!doctype html>
             <button class="inspect-bed" data-bed-id="${bed.bed_id}">Inspect Bed</button>
           </div>
           <p class="bed-update-age">Flower update: ${latestPlantUpdateAge(bedPlants)}</p>
+          <p class="bed-update-age">April tags: ${(bed.april_tags || []).join(", ") || "none"}</p>
           <div class="bed-metrics">
             <p><strong>${bed.co2 == null ? "unavailable" : bed.co2}</strong>CO2</p>
             <p><strong>${bed.humidity == null ? "unavailable" : bed.humidity}</strong>humidity</p>
@@ -3649,6 +3654,7 @@ class UiNode(Node):
         beds_by_id = {
             bed_id: {
                 "bed_id": bed_id,
+                "april_tags": list(BED_ID_TO_TAGS.get(bed_id, ())),
                 "co2": None,
                 "humidity": None,
                 "bugs_detected": None,
