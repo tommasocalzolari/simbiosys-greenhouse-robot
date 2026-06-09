@@ -23,6 +23,10 @@ setup(
             "bed_side_controller_node = simbiosys_behavior.bed_side_controller_node:main",
             "scan_pose_controller_node = simbiosys_behavior.scan_pose_controller_node:main",
             "mission_manager_node = simbiosys_behavior.mission_manager_node:main",
+            "simple_mission_manager_node = "
+            "simbiosys_behavior.simple_mission_manager_node:main",
+            "demo_checkpoint_mission_node = "
+            "simbiosys_behavior.demo_checkpoint_mission_node:main",
             "operator_led_node = simbiosys_behavior.operator_led_node:main",
         ],
     },

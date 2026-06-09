@@ -253,6 +253,58 @@ Watch checkpoint status:
 ros2 topic echo /checkpoint_status
 ```
 
+## Minimal Demo Mission
+
+The demo mission is a deliberately small state machine:
+
+```text
+WAIT_FOR_START
+  -> NAVIGATE_TO_CHECKPOINT
+  -> ANALYZE_ONE_FRESH_IMAGE
+  -> NAVIGATE_TO_NEXT_CHECKPOINT
+  -> COMPLETE
+```
+
+Start the complete laptop-side system:
+
+```bash
+ros2 launch simbiosys_bringup demo_checkpoint_mission.launch.py
+```
+
+In the web UI, press `Start Mission Route`. The UI safety `START/STOP` button
+only enables or stops commands; it does not start the mission.
+
+The ROS contract is:
+
+- UI sends `simbiosys_interfaces/action/ExecuteBehavior` on
+  `/simbiosys/execute_behavior` with `behavior.type=INSPECT_BED` and
+  `target_id=all`.
+- `demo_checkpoint_mission_node` publishes `next` on `/checkpoint_commands`.
+- `checkpoint_navigator_node` sends the annotation pose to `/navigate_to_pose`
+  using `nav2_msgs/action/NavigateToPose`.
+- The checkpoint navigator publishes an `arrived` JSON status on
+  `/checkpoint_status` after a successful Nav2 action result.
+- The demo mission node sends `simbiosys_interfaces/action/AnalyzePlantScan` on
+  `/simbiosys/analyze_plant_scan`.
+- Perception subscribes for one fresh image from
+  `/camera/color/image_raw/compressed`, performs flower analysis, publishes
+  `/simbiosys/flower_data`, `/simbiosys/plant_health`, and
+  `/simbiosys/flower_debug_image`, then returns the action result.
+- A successful analysis result advances the state machine to the next
+  checkpoint.
+- Progress is published on `/simbiosys/current_mission`,
+  `/simbiosys/scan_progress`, `/simbiosys/task_status`, and
+  `/checkpoint_status`.
+
+The demo node automates the same `/checkpoint_commands` interface that can also
+be driven manually with the commands documented above.
+
+For a route-only test without YOLO or a camera:
+
+```bash
+ros2 launch simbiosys_bringup demo_checkpoint_mission.launch.py analysis_dry_run:=true
+```
+
 Useful checks while checkpoint navigation is running:
 
 ```bash

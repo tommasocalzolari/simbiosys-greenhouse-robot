@@ -86,8 +86,8 @@ controller_server:
 
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.18 # still relaxed, but slightly more precise
-      yaw_goal_tolerance: 0.18 # less permissive theta/yaw error at the final goal
+      xy_goal_tolerance: 0.1  # accept the final goal within 15 cm
+      yaw_goal_tolerance: 0.1 # accept the final heading within about 8.6 degrees
 
       stateful: true
 
@@ -108,7 +108,7 @@ controller_server:
       rotate_to_goal_heading: true
       debug_trajectory_details: false
       min_vel_x: 0.0           # avoid very small forward commands; backup is handled by the BackUp behavior
-      min_vel_y: -0.20         # allow rightward strafing at the shared minimum speed
+      min_vel_y: -0.28         # allow rightward strafing at the shared minimum speed
       max_vel_x: 0.325         # approximately 25% above the original tuning
       max_vel_y: 0.28          # allow leftward strafing at the shared minimum speed
       max_vel_theta: 1.25      # stronger turns in tight spaces
@@ -129,7 +129,7 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.18
+      xy_goal_tolerance: 0.15
       trans_stopped_velocity: 0.10
       short_circuit_trajectory_evaluation: true
       stateful: true

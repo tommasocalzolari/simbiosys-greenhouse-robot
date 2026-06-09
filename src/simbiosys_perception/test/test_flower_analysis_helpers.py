@@ -1,5 +1,6 @@
 import threading
 
+import pytest
 from builtin_interfaces.msg import Time
 from rclpy.action import GoalResponse
 from sensor_msgs.msg import CompressedImage
@@ -7,7 +8,10 @@ from sensor_msgs.msg import CompressedImage
 from simbiosys_interfaces.action import AnalyzePlantScan
 from simbiosys_interfaces.msg import FlowerData, ScanPosition
 from simbiosys_perception import flower_detection_node as flower_detection_module
-from simbiosys_perception.flower_detection_node import FlowerDetectionNode
+from simbiosys_perception.flower_detection_node import (
+    FlowerDetection,
+    FlowerDetectionNode,
+)
 
 
 class _Clock:
@@ -26,6 +30,7 @@ class _ScanContext:
         self.scan_position.base_pose.x = 1.2
         self.scan_position.base_pose.y = 3.4
         self.side = "b"
+        self.request_id = "mission-1:bed_2_b_1:b:lane=left"
 
 
 class _Logger:
@@ -106,6 +111,8 @@ def test_plant_health_uses_new_flower_data_summary_contract():
     flower_data.dominant_count = 3
     flower_data.dominant_confidence = 0.82
     flower_data.heights_cm = [10.0, 20.0, 0.0]
+    flower_data.labels = ["magenta", "white", "light_pink"]
+    flower_data.confidences = [0.82, 0.75, 0.61]
     flower_data.message = "detected=3"
 
     plant_health = node._plant_health_from_flower_data(
@@ -124,6 +131,57 @@ def test_plant_health_uses_new_flower_data_summary_contract():
     assert plant_health.position.x == 1.2
     assert plant_health.position.y == 3.4
     assert plant_health.position.z == 15.0
+    assert list(plant_health.detected_colors) == ["magenta", "white", "light_pink"]
+    assert list(plant_health.detected_heights_cm) == [10.0, 20.0, 0.0]
+    assert list(plant_health.detected_confidences) == pytest.approx(
+        [0.82, 0.75, 0.61]
+    )
+    assert "bed_side:b" in plant_health.notes
+    assert "lane:left" in plant_health.notes
+
+
+def test_build_message_only_publishes_dominant_color_detections():
+    node = object.__new__(FlowerDetectionNode)
+    detections = [
+        FlowerDetection((30, 0, 10, 10), (35, 0), "white", 100.0, 0.95),
+        FlowerDetection((20, 0, 10, 10), (25, 0), "magenta", 100.0, 0.70),
+        FlowerDetection((10, 0, 10, 10), (15, 0), "magenta", 100.0, 0.80),
+    ]
+
+    flower_data = node._build_message(detections, [30.0, 20.0, 10.0])
+
+    assert flower_data.dominant_label == "magenta"
+    assert flower_data.dominant_count == 2
+    assert list(flower_data.labels) == ["magenta", "magenta"]
+    assert list(flower_data.heights_cm) == [10.0, 20.0]
+    assert list(flower_data.confidences) == pytest.approx([0.8, 0.7])
+    assert "filtered_from=3" in flower_data.message
+
+
+def test_bed_one_scan_position_one_maps_to_left_lane():
+    scan_position = ScanPosition()
+    scan_position.scan_position_id = "bed_1_a_1"
+    scan_position.bed_id = "1"
+
+    assert FlowerDetectionNode._lane_for_scan(scan_position) == "left"
+
+
+def test_bed_three_scan_position_one_also_maps_to_left_lane():
+    scan_position = ScanPosition()
+    scan_position.scan_position_id = "bed_3_a_1"
+    scan_position.bed_id = "3"
+
+    assert FlowerDetectionNode._lane_for_scan(scan_position) == "left"
+
+
+def test_explicit_request_lane_overrides_scan_suffix():
+    scan_position = ScanPosition()
+    scan_position.scan_position_id = "bed_1_a_1"
+    scan_position.bed_id = "1"
+    context = _ScanContext()
+    context.request_id = "mission-1:bed_1_a_1:a:lane=right"
+
+    assert FlowerDetectionNode._lane_for_scan(scan_position, context) == "right"
 
 
 def test_analyze_goal_creates_and_releases_lazy_image_subscription():

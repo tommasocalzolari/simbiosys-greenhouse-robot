@@ -11,3 +11,6 @@ float32 confidence
 builtin_interfaces/Time last_scan_time
 string notes
 geometry_msgs/Point position
+string[] detected_colors
+float32[] detected_heights_cm
+float32[] detected_confidences

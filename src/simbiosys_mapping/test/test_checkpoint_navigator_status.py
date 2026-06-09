@@ -42,6 +42,8 @@ def test_checkpoint_status_includes_structured_targets():
                 "scan_position_id": "bed_1_a_1",
                 "order": 1,
                 "target_distance_m": 0.42,
+                "terminal": False,
+                "run_perception": True,
             },
         }
     ]
@@ -59,4 +61,24 @@ def test_checkpoint_status_includes_structured_targets():
     assert status["next_target"]["label"] == "checkpoint_1"
     assert status["next_target"]["metadata"]["bed_id"] == "1"
     assert status["next_target"]["metadata"]["side"] == "a"
+    assert not status["next_target"]["metadata"]["terminal"]
+    assert status["next_target"]["metadata"]["run_perception"]
     assert status["next_target"]["pose"]["position"]["x"] == 1.0
+
+
+def test_checkpoint_metadata_preserves_terminal_flags():
+    checkpoint = {
+        "order": 13,
+        "terminal": True,
+        "run_perception": False,
+    }
+
+    metadata = CheckpointNavigatorNode._metadata_from_checkpoint(
+        object.__new__(CheckpointNavigatorNode),
+        checkpoint,
+        "checkpoint_13",
+        13,
+    )
+
+    assert metadata["terminal"]
+    assert not metadata["run_perception"]

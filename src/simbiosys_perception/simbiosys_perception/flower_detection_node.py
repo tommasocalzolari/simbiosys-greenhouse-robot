@@ -257,6 +257,8 @@ class FlowerDetectionNode(Node):
             flower_data.dominant_count = 0
             flower_data.dominant_confidence = 0.0
             flower_data.heights_cm = []
+            flower_data.labels = []
+            flower_data.confidences = []
             flower_data.message = "DRY_RUN: plant scan analysis accepted"
             plant_health = self._plant_health_from_flower_data(
                 flower_data,
@@ -639,6 +641,8 @@ class FlowerDetectionNode(Node):
             msg.dominant_count = 0
             msg.dominant_confidence = 0.0
             msg.heights_cm = []
+            msg.labels = []
+            msg.confidences = []
             msg.message = "No Dahlia flower detected"
             return msg
 
@@ -654,8 +658,13 @@ class FlowerDetectionNode(Node):
                 item[0],
             ),
         )
+        dominant_detection_heights = [
+            (detection, height_cm)
+            for detection, height_cm in zip(detections, heights_cm)
+            if detection.color_label == dominant_label
+        ]
         ordered_detection_heights = sorted(
-            zip(detections, heights_cm),
+            dominant_detection_heights,
             key=lambda item: item[0].bbox[0],
         )
         ordered_heights = [
@@ -672,8 +681,17 @@ class FlowerDetectionNode(Node):
         msg.dominant_count = len(dominant_detections)
         msg.dominant_confidence = self._average_confidence(dominant_detections)
         msg.heights_cm = ordered_heights
+        msg.labels = [
+            detection.color_label
+            for detection, _height_cm in ordered_detection_heights
+        ]
+        msg.confidences = [
+            float(detection.confidence or 0.0)
+            for detection, _height_cm in ordered_detection_heights
+        ]
         msg.message = (
-            f"detected={len(detections)}; dominant={msg.dominant_label}; "
+            f"detected={len(ordered_detection_heights)}; "
+            f"filtered_from={len(detections)}; dominant={msg.dominant_label}; "
             f"dominant_count={msg.dominant_count}; "
             f"dominant_confidence={msg.dominant_confidence:.2f}; "
             f"heights_cm={[round(height_cm, 1) for height_cm in ordered_heights]}"
@@ -704,16 +722,46 @@ class FlowerDetectionNode(Node):
         msg.color = flower_data.dominant_label
         msg.confidence = float(flower_data.dominant_confidence)
         msg.height_cm = self._representative_height_cm(flower_data.heights_cm)
+        msg.detected_colors = list(flower_data.labels)
+        msg.detected_heights_cm = list(flower_data.heights_cm)
+        msg.detected_confidences = list(flower_data.confidences)
         msg.position.z = float(msg.height_cm)
         msg.growth_stage = "unknown"
         msg.ready_for_harvest = False
         msg.health = "unknown" if flower_data.detected else "no_detection"
         msg.last_scan_time = self.get_clock().now().to_msg()
+        lane = self._lane_for_scan(scan_position, scan_context)
         msg.notes = (
-            f"side:{side or 'unknown'}; count:{flower_data.dominant_count}; "
+            f"bed_side:{side or 'unknown'}; lane:{lane or 'unknown'}; "
+            f"count:{flower_data.dominant_count}; "
             f"{flower_data.message}"
         )
         return msg
+
+    @staticmethod
+    def _lane_for_scan(scan_position, scan_context=None) -> str:
+        if scan_position is None:
+            return ""
+        request_id = str(
+            getattr(scan_context, "request_id", "") or ""
+        ).strip().lower()
+        if request_id.endswith("lane=right"):
+            return "right"
+        if request_id.endswith("lane=left"):
+            return "left"
+
+        scan_position_id = str(
+            getattr(scan_position, "scan_position_id", "") or ""
+        ).strip()
+        try:
+            position_in_side = int(scan_position_id.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            return ""
+        if position_in_side == 1:
+            return "left"
+        if position_in_side == 2:
+            return "right"
+        return ""
 
     def _flower_id_for_scan(self, scan_position, side: str) -> str:
         parts = [

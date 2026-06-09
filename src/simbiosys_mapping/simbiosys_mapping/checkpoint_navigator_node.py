@@ -512,6 +512,7 @@ class CheckpointNavigatorNode(Node):
 
         bed_id = checkpoint.get("bed_id", metadata.get("bed_id", ""))
         side = checkpoint.get("side", metadata.get("side", ""))
+        lane = checkpoint.get("lane", metadata.get("lane", ""))
         scan_position_id = checkpoint.get(
             "scan_position_id",
             metadata.get("scan_position_id", label),
@@ -520,13 +521,21 @@ class CheckpointNavigatorNode(Node):
             "target_distance_m",
             metadata.get("target_distance_m", None),
         )
+        terminal = checkpoint.get("terminal", metadata.get("terminal", False))
+        run_perception = checkpoint.get(
+            "run_perception",
+            metadata.get("run_perception", True),
+        )
 
         return {
             "bed_id": str(bed_id),
             "side": str(side).lower(),
+            "lane": str(lane).lower(),
             "scan_position_id": str(scan_position_id or label),
             "order": int(checkpoint.get("order", metadata.get("order", order))),
             "target_distance_m": target_distance_m,
+            "terminal": bool(terminal),
+            "run_perception": bool(run_perception),
         }
 
     def _target_payload(self, target: dict[str, Any] | None) -> dict[str, Any] | None:

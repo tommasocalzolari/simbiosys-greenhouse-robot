@@ -47,7 +47,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("marker_topic", default_value="/map_annotations"),
             DeclareLaunchArgument("publish_markers", default_value="true"),
             DeclareLaunchArgument("publish_initial_pose", default_value="true"),
-            DeclareLaunchArgument("initial_pose_publish_count", default_value="30"),
+            DeclareLaunchArgument(
+                "initial_pose_publish_count",
+                default_value="5",
+                description=(
+                    "Publish a short initial-pose burst without repeatedly "
+                    "resetting AMCL during Nav2 startup."
+                ),
+            ),
             DeclareLaunchArgument("initial_pose_publish_period", default_value="1.0"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("use_rviz", default_value="true"),

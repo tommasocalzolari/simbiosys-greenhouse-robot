@@ -1471,7 +1471,7 @@ INDEX_HTML = """<!doctype html>
       if (color === "magenta") return "#d657c9";
       if (color === "light_pink") return "#f0a9cc";
       if (color === "white") return "#edf5ef";
-      return "#edf5ef";
+      return "#87918b";
     }
     function plantBedSide(plant) {
       const direct = String(plant.bed_side || plant.bedSide || plant.side_letter || plant.zijkant || "").toLowerCase();
@@ -3116,6 +3116,25 @@ class UiNode(Node):
         if not flower_id:
             self.get_logger().warn("Ignoring PlantHealth without flower_id")
             return
+        detected_colors = list(getattr(msg, "detected_colors", []))
+        detected_heights = list(getattr(msg, "detected_heights_cm", []))
+        detected_confidences = list(
+            getattr(msg, "detected_confidences", [])
+        )
+        if not bool(msg.flower_detected):
+            self._remove_scan_flowers(flower_id)
+            self._external_report = None
+            return
+        if detected_colors or detected_heights:
+            self._update_detected_flowers(
+                flower_id,
+                msg,
+                detected_colors,
+                detected_heights,
+                detected_confidences,
+            )
+            self._external_report = None
+            return
         payload = {
             "flower_id": flower_id,
             "bed_id": str(msg.bed_id).strip(),
@@ -3136,11 +3155,82 @@ class UiNode(Node):
             warning = self._first_warning_from_text(msg.notes)
         if warning:
             payload["warning"] = warning
-        side = self._side_from_notes(msg.notes)
-        if side:
-            payload["side"] = side
+        bed_side = self._bed_side_from_notes(msg.notes)
+        lane = self._lane_from_notes(msg.notes)
+        if bed_side:
+            payload["bed_side"] = bed_side
+        if lane:
+            payload["lane"] = lane
         self._update_plant_from_payload(flower_id, payload)
         self._external_report = None
+
+    def _update_detected_flowers(
+        self,
+        scan_flower_id: str,
+        msg,
+        colors,
+        heights,
+        confidences,
+    ) -> None:
+        self._remove_scan_flowers(scan_flower_id)
+        count = max(len(colors), len(heights), len(confidences))
+        if count <= 0:
+            return
+        bed_side = self._bed_side_from_notes(msg.notes)
+        lane = self._lane_from_notes(msg.notes)
+        warnings = self._warnings_from_heights(
+            [float(height) for height in heights]
+        )
+        last_scan_time = self._time_msg_to_iso(msg.last_scan_time)
+        for index in range(count):
+            color = (
+                str(colors[index])
+                if index < len(colors)
+                else str(msg.color)
+            )
+            height = (
+                round(float(heights[index]), 1)
+                if index < len(heights)
+                else round(float(msg.height_cm), 1)
+            )
+            confidence = (
+                float(confidences[index])
+                if index < len(confidences)
+                else float(msg.confidence)
+            )
+            flower_id = f"{scan_flower_id}:{index + 1:02d}"
+            payload = {
+                "flower_id": flower_id,
+                "bed_id": str(msg.bed_id).strip(),
+                "bed_side": bed_side,
+                "lane": lane,
+                "height_cm": height,
+                "color": color,
+                "health": msg.health,
+                "growth_stage": msg.growth_stage,
+                "bug_detected": bool(msg.bug_detected),
+                "flower_detected": True,
+                "ready_for_harvest": bool(msg.ready_for_harvest),
+                "confidence": confidence,
+                "last_scan_time": last_scan_time,
+                "notes": msg.notes,
+                "position": {
+                    "x": msg.position.x,
+                    "y": msg.position.y,
+                    "z": height,
+                },
+            }
+            if index < len(warnings) and warnings[index]:
+                payload["warning"] = warnings[index]
+            self._update_plant_from_payload(flower_id, payload)
+
+    def _remove_scan_flowers(self, scan_flower_id: str) -> None:
+        prefix = f"{scan_flower_id}:"
+        self._plants.pop(scan_flower_id, None)
+        for flower_id in [
+            key for key in self._plants if key.startswith(prefix)
+        ]:
+            self._plants.pop(flower_id, None)
 
     def _on_flower_counts(self, msg: String) -> None:
         try:
@@ -3561,12 +3651,35 @@ class UiNode(Node):
                 continue
         return heights
 
-    def _side_from_notes(self, notes: str) -> str:
+    def _bed_side_from_notes(self, notes: str) -> str:
         lowered = str(notes or "").lower()
-        if "side:left" in lowered or "side=left" in lowered:
+        if (
+            "bed_side:a" in lowered
+            or "bed_side=a" in lowered
+            or "side:a" in lowered
+            or "side=a" in lowered
+        ):
+            return "a"
+        if (
+            "bed_side:b" in lowered
+            or "bed_side=b" in lowered
+            or "side:b" in lowered
+            or "side=b" in lowered
+        ):
+            return "b"
+        return ""
+
+    @staticmethod
+    def _lane_from_notes(notes: str) -> str:
+        lowered = str(notes or "").lower()
+        if "lane:right" in lowered or "lane=right" in lowered:
+            return "right"
+        if "lane:left" in lowered or "lane=left" in lowered:
             return "left"
         if "side:right" in lowered or "side=right" in lowered:
             return "right"
+        if "side:left" in lowered or "side=left" in lowered:
+            return "left"
         return ""
 
     def _on_plant_health_report(self, msg: String) -> None:
