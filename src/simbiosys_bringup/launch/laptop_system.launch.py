@@ -91,7 +91,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "bed_side_surface_region",
-                default_value="left",
+                default_value="front",
                 description="LaserScan region used for bed-side alignment: left, right, or front.",
             ),
             DeclareLaunchArgument(
