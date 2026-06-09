@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 import rclpy
+import yaml
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Quaternion, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
 from rclpy.action import ActionClient
@@ -22,6 +23,11 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 try:
     from nav2_msgs.action import NavigateToPose
@@ -66,6 +72,7 @@ DEFAULT_CONFIG = {
         "armCameraCompressed": "/gripper_camera/image_raw/compressed",
         "armCameraRaw": None,
         "liveMap": "/map",
+        "staticMapYaml": "maps/mirte_map.yaml",
         "mapUpdatePeriodSec": 10,
         "initialPose": "/initialpose",
         "goalPose": "/goal_pose",
@@ -87,6 +94,8 @@ DEFAULT_CONFIG = {
         "safeMapOutput": None,
         "takeControl": None,
         "manualControlState": "simbiosys/ui/manual_control_active",
+        "checkpointCommand": "/checkpoint_commands",
+        "checkpointStatus": "/checkpoint_status",
         "odom": "/mirte_base_controller/odom",
         "amclPose": "/amcl_pose",
         "plantHealth": "/plant_health",
@@ -476,17 +485,21 @@ INDEX_HTML = """<!doctype html>
           <div class="panel-body">
             <div class="topline">
               <h2>Map Position</h2>
-              <span id="dashboard-map-time" class="status-pill">Last SLAM map: not received yet</span>
+              <span id="robot-pose-status" class="status-pill">Robot pose: waiting</span>
             </div>
             <div id="dashboard-map-placeholder" class="placeholder">Waiting for SLAM map</div>
             <canvas id="dashboard-map-canvas" width="900" height="520" style="display:none"></canvas>
             <div class="control-row">
               <span id="selected-target">No map position selected</span>
               <div class="topline">
+                <button id="map-zoom-out">-</button>
+                <button id="map-zoom-reset">1x</button>
+                <button id="map-zoom-in">+</button>
                 <button id="set-initial-pose" disabled>Set Start Pose</button>
                 <button id="navigate-target" disabled>Navigate</button>
                 <button id="cancel-navigation" disabled>Cancel Navigation</button>
                 <button id="go-home" disabled>Go Home</button>
+                <button id="checkpoint-next" disabled>Move to Next Checkpoint</button>
               </div>
             </div>
             <p id="navigation-message">Navigation backend unavailable</p>
@@ -620,9 +633,15 @@ INDEX_HTML = """<!doctype html>
       lastMapStamp: null,
       lastCandidateStamp: null,
       lastPlanStamp: null,
+      lastRobotPoseStamp: null,
       selectedMapTarget: null,
       mapTargetDrag: null,
+      mapZoom: 1,
+      mapPan: {x: 0, y: 0},
+      mapPanDrag: null,
+      mapPointers: new Map(),
       navigationActive: false,
+      checkpointCommandAvailable: false,
       selectedPlantId: null,
       manualControlActive: false,
       safetyPaused: false,
@@ -806,6 +825,7 @@ INDEX_HTML = """<!doctype html>
       document.getElementById("navigate-target").disabled = state.safetyPaused || !state.selectedMapTarget || !state.navigationAvailable;
       document.getElementById("set-initial-pose").disabled = state.safetyPaused || !state.selectedMapTarget || !state.initialPoseAvailable;
       document.getElementById("go-home").disabled = state.safetyPaused || !state.navigationAvailable;
+      document.getElementById("checkpoint-next").disabled = state.safetyPaused || !state.checkpointCommandAvailable;
       document.getElementById("cancel-navigation").disabled = state.safetyPaused || !state.navigationActive;
       const takeButton = document.getElementById("take-control");
       takeButton.textContent = state.manualControlActive ? "Release Control" : "Take Control";
@@ -815,11 +835,12 @@ INDEX_HTML = """<!doctype html>
     }
 
     function mapToCanvas(map, canvas) {
-      const cell = Math.max(1, Math.floor(Math.min(canvas.width / map.width, canvas.height / map.height)));
+      const zoom = Math.max(0.35, Math.min(8, Number(state.mapZoom) || 1));
+      const cell = Math.min(canvas.width / map.width, canvas.height / map.height) * zoom;
       return {
         cell,
-        x0: Math.floor((canvas.width - map.width * cell) / 2),
-        y0: Math.floor((canvas.height - map.height * cell) / 2),
+        x0: (canvas.width - map.width * cell) / 2 + state.mapPan.x,
+        y0: (canvas.height - map.height * cell) / 2 + state.mapPan.y,
       };
     }
     function worldToCanvas(map, canvas, x, y) {
@@ -1046,6 +1067,21 @@ INDEX_HTML = """<!doctype html>
         ? `Selected ${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${yawDegrees(Number(target.yaw) || 0)}`
         : "No target selected";
     }
+    function robotPoseStatusText(robotPose) {
+      if (!robotPose || !Number.isFinite(robotPose.x) || !Number.isFinite(robotPose.y)) return "Robot pose: waiting";
+      const source = robotPose.source === "amcl" ? "AMCL" : "odom";
+      const age = robotPose.receivedAt ? `, ${timeSince(robotPose.receivedAt)}` : "";
+      return `Robot pose: ${source} ${robotPose.x.toFixed(2)}, ${robotPose.y.toFixed(2)}, ${yawDegrees(robotPose.yaw)}${age}`;
+    }
+    function mapStatusText(map) {
+      if (!map) return "Map unavailable";
+      return map.source === "static" ? "Static map loaded" : "Live map available";
+    }
+    function setMapZoom(zoom) {
+      state.mapZoom = Math.max(0.35, Math.min(8, zoom));
+      document.getElementById("map-zoom-reset").textContent = `${state.mapZoom.toFixed(1)}x`;
+      renderMaps({map: state.reviewMode && state.frozenMap ? state.frozenMap : state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
+    }
     function drawRobotMarker(ctx, map, canvas, robotPose) {
       if (!robotPose || !Number.isFinite(robotPose.x) || !Number.isFinite(robotPose.y) || !map.resolution) return;
       const robot = worldToCanvas(map, canvas, robotPose.x, robotPose.y);
@@ -1173,13 +1209,52 @@ INDEX_HTML = """<!doctype html>
     function mapEventWorld(event) {
       if (!state.latestMap) return;
       const canvas = event.currentTarget;
-      const rect = canvas.getBoundingClientRect();
+      const point = canvasEventPoint(canvas, event);
       return canvasToWorld(
         state.latestMap,
         canvas,
-        (event.clientX - rect.left) * (canvas.width / rect.width),
-        (event.clientY - rect.top) * (canvas.height / rect.height)
+        point.x,
+        point.y
       );
+    }
+    function canvasEventPoint(canvas, event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * (canvas.width / rect.width),
+        y: (event.clientY - rect.top) * (canvas.height / rect.height),
+      };
+    }
+    function mapPointerCentroid() {
+      const pointers = Array.from(state.mapPointers.values());
+      if (!pointers.length) return null;
+      return {
+        x: pointers.reduce((sum, pointer) => sum + pointer.x, 0) / pointers.length,
+        y: pointers.reduce((sum, pointer) => sum + pointer.y, 0) / pointers.length,
+      };
+    }
+    function startMapPan(point, pointerId = null) {
+      if (state.mapTargetDrag && Object.prototype.hasOwnProperty.call(state.mapTargetDrag, "previousTarget")) {
+        state.selectedMapTarget = state.mapTargetDrag.previousTarget;
+        updateSelectedTargetLabel();
+        updateSafetyButton();
+      }
+      state.mapTargetDrag = null;
+      if (!point) return;
+      state.mapPanDrag = {
+        pointerId,
+        x: point.x,
+        y: point.y,
+        panX: state.mapPan.x,
+        panY: state.mapPan.y,
+      };
+    }
+    function updateMapPan(point) {
+      if (!state.mapPanDrag || !point) return;
+      state.mapPan = {
+        x: state.mapPanDrag.panX + point.x - state.mapPanDrag.x,
+        y: state.mapPanDrag.panY + point.y - state.mapPanDrag.y,
+      };
+      renderMaps({map: state.reviewMode && state.frozenMap ? state.frozenMap : state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
     }
     function setSelectedMapTarget(target, yaw = null) {
       if (!target) return;
@@ -1193,13 +1268,41 @@ INDEX_HTML = """<!doctype html>
       renderMaps({map: state.latestMap, robotPose: state.latestRobotPose, navPlan: state.latestNavPlan});
     }
     document.getElementById("dashboard-map-canvas").addEventListener("pointerdown", (event) => {
+      const canvas = event.currentTarget;
+      const point = canvasEventPoint(canvas, event);
+      state.mapPointers.set(event.pointerId, point);
+      canvas.setPointerCapture(event.pointerId);
+      if (event.button === 2 || event.buttons === 2) {
+        event.preventDefault();
+        startMapPan(point, event.pointerId);
+        return;
+      }
+      if (event.pointerType === "touch" && state.mapPointers.size >= 2) {
+        event.preventDefault();
+        startMapPan(mapPointerCentroid());
+        return;
+      }
       const target = mapEventWorld(event);
       if (!target) return;
-      event.currentTarget.setPointerCapture(event.pointerId);
-      state.mapTargetDrag = {x: target.x, y: target.y, yaw: null};
+      state.mapTargetDrag = {x: target.x, y: target.y, yaw: null, previousTarget: state.selectedMapTarget};
       setSelectedMapTarget(target);
     });
     document.getElementById("dashboard-map-canvas").addEventListener("pointermove", (event) => {
+      const canvas = event.currentTarget;
+      const point = canvasEventPoint(canvas, event);
+      if (state.mapPointers.has(event.pointerId)) {
+        state.mapPointers.set(event.pointerId, point);
+      }
+      if (state.mapPanDrag) {
+        event.preventDefault();
+        updateMapPan(state.mapPanDrag.pointerId == null ? mapPointerCentroid() : point);
+        return;
+      }
+      if (event.pointerType === "touch" && state.mapPointers.size >= 2) {
+        event.preventDefault();
+        startMapPan(mapPointerCentroid());
+        return;
+      }
       if (!state.mapTargetDrag) return;
       const current = mapEventWorld(event);
       if (!current) return;
@@ -1213,17 +1316,30 @@ INDEX_HTML = """<!doctype html>
       if (state.mapTargetDrag && Number.isFinite(state.mapTargetDrag.yaw)) {
         setSelectedMapTarget({x: state.mapTargetDrag.x, y: state.mapTargetDrag.y}, state.mapTargetDrag.yaw);
       }
+      state.mapPointers.delete(event.pointerId);
       state.mapTargetDrag = null;
+      state.mapPanDrag = null;
       try {
         event.currentTarget.releasePointerCapture(event.pointerId);
       } catch (_error) {}
     });
     document.getElementById("dashboard-map-canvas").addEventListener("pointercancel", (event) => {
+      state.mapPointers.delete(event.pointerId);
       state.mapTargetDrag = null;
+      state.mapPanDrag = null;
       try {
         event.currentTarget.releasePointerCapture(event.pointerId);
       } catch (_error) {}
     });
+    document.getElementById("dashboard-map-canvas").addEventListener("contextmenu", (event) => event.preventDefault());
+    document.getElementById("dashboard-map-canvas").addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const direction = event.deltaY > 0 ? -1 : 1;
+      setMapZoom(state.mapZoom * (direction > 0 ? 1.2 : 1 / 1.2));
+    }, {passive: false});
+    document.getElementById("map-zoom-out").addEventListener("click", () => setMapZoom(state.mapZoom / 1.25));
+    document.getElementById("map-zoom-in").addEventListener("click", () => setMapZoom(state.mapZoom * 1.25));
+    document.getElementById("map-zoom-reset").addEventListener("click", () => setMapZoom(1));
     document.getElementById("navigate-target").addEventListener("click", async () => {
       if (!state.selectedMapTarget) return;
       const data = await postJson("/api/navigation/goal", state.selectedMapTarget);
@@ -1242,9 +1358,13 @@ INDEX_HTML = """<!doctype html>
       const data = await postJson("/api/navigation/home");
       document.getElementById("navigation-message").textContent = data.message;
     });
+    document.getElementById("checkpoint-next").addEventListener("click", async () => {
+      const data = await postJson("/api/checkpoint/next");
+      document.getElementById("navigation-message").textContent = data.message;
+    });
 
     function renderMaps(data) {
-      const map = state.reviewMode && state.frozenMap ? state.frozenMap : data.map;
+      const map = state.reviewMode && state.frozenMap ? state.frozenMap : (data.map || state.latestMap);
       drawOccupancyGrid("dashboard-map-canvas", "dashboard-map-placeholder", map, data.robotPose, true, state.selectedMapTarget, data.navPlan);
     }
     function maybeRenderMaps(data) {
@@ -1252,6 +1372,7 @@ INDEX_HTML = """<!doctype html>
       const stamp = map ? map.receivedAt : null;
       const candidateStamp = state.reviewMode ? "review" : state.artifactCandidatesReceivedAt;
       const planStamp = data.navPlan ? data.navPlan.receivedAt : null;
+      const robotPoseStamp = data.robotPose ? data.robotPose.receivedAt : null;
       const periodMs = Math.max(1, Number(data.topics.mapUpdatePeriodSec || 10)) * 1000;
       const now = Date.now();
       if (!map) {
@@ -1261,11 +1382,13 @@ INDEX_HTML = """<!doctype html>
       if (
         candidateStamp !== state.lastCandidateStamp ||
         planStamp !== state.lastPlanStamp ||
+        robotPoseStamp !== state.lastRobotPoseStamp ||
         (stamp !== state.lastMapStamp && (now - state.lastMapRenderMs >= periodMs || !state.lastMapStamp))
       ) {
         state.lastMapStamp = stamp;
         state.lastCandidateStamp = candidateStamp;
         state.lastPlanStamp = planStamp;
+        state.lastRobotPoseStamp = robotPoseStamp;
         state.lastMapRenderMs = now;
         renderMaps(data);
       }
@@ -1291,13 +1414,6 @@ INDEX_HTML = """<!doctype html>
         return Math.max(latestSeen, parsed);
       }, 0);
       return latest ? timeSince(new Date(latest).toISOString()) : "no flower update yet";
-    }
-    function mapAgeText(map) {
-      if (!map || !map.receivedAt) return "Last SLAM map: not received yet";
-      const parsed = Date.parse(map.receivedAt);
-      if (!Number.isFinite(parsed)) return "Last SLAM map: not received yet";
-      const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
-      return `Last SLAM map: ${seconds} sec ago`;
     }
     function renderReport(report, plants) {
       document.getElementById("bed-count").textContent = report.totalBeds;
@@ -1551,7 +1667,8 @@ INDEX_HTML = """<!doctype html>
       const candidates = candidateSet();
       const parseError = document.getElementById("candidate-parse-error");
       const renderWarnings = state.renderWarnings || [];
-      document.getElementById("mapping-map-time").textContent = mapAgeText(state.latestMap);
+      const mappingMapTime = document.getElementById("mapping-map-time");
+      if (mappingMapTime) mappingMapTime.textContent = mapStatusText(state.latestMap);
       parseError.style.display = state.artifactCandidatesParseError || renderWarnings.length ? "" : "none";
       parseError.textContent = [state.artifactCandidatesParseError, ...renderWarnings].filter(Boolean).join(" | ");
       if (!candidates.length) {
@@ -1716,6 +1833,7 @@ INDEX_HTML = """<!doctype html>
         state.navigationAvailable = data.navigation.available;
         state.initialPoseAvailable = data.navigation.initialPoseAvailable;
         state.navigationActive = data.navigation.active;
+        state.checkpointCommandAvailable = Boolean(data.checkpoint && data.checkpoint.commandAvailable);
         if (data.map) state.latestMap = data.map;
         state.latestNavPlan = data.navPlan || state.latestNavPlan;
         state.latestRobotPose = data.robotPose || state.latestRobotPose;
@@ -1726,7 +1844,7 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("camera-placeholder").style.display = data.cameraReady ? "none" : "grid";
         document.getElementById("camera-select").value = data.camera.current;
         document.querySelector('#camera-select option[value="arm"]').disabled = !data.camera.armAvailable;
-        document.getElementById("dashboard-map-time").textContent = mapAgeText(state.latestMap);
+        document.getElementById("robot-pose-status").textContent = robotPoseStatusText(state.latestRobotPose);
         maybeRenderMaps(data);
         renderReport(data.report, data.plants);
         renderBeds(data);
@@ -1738,7 +1856,9 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("set-initial-pose").disabled = state.safetyPaused || !state.selectedMapTarget || !data.navigation.initialPoseAvailable;
         document.getElementById("cancel-navigation").disabled = state.safetyPaused || !data.navigation.active;
         document.getElementById("go-home").disabled = state.safetyPaused || !data.navigation.available;
-        document.getElementById("navigation-message").textContent = data.navigation.message || (data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable");
+        document.getElementById("checkpoint-next").disabled = state.safetyPaused || !state.checkpointCommandAvailable;
+        const checkpointMessage = data.checkpoint && data.checkpoint.status ? data.checkpoint.status.message : "";
+        document.getElementById("navigation-message").textContent = checkpointMessage || data.navigation.message || (data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable");
         document.getElementById("take-control-message").textContent = state.manualControlActive ? "Manual teleop control active" : data.takeControl.message;
         const startMappingButton = document.getElementById("start-mapping");
         if (startMappingButton) {
@@ -1828,6 +1948,13 @@ def quaternion_from_yaw(yaw: float) -> Quaternion:
     return quat
 
 
+def yaw_from_map_origin(origin: list) -> float:
+    try:
+        return float(origin[2])
+    except (IndexError, TypeError, ValueError):
+        return 0.0
+
+
 def _clean_text(value, default: str = "") -> str:
     if value is None:
         return default
@@ -1894,6 +2021,7 @@ class UiNode(Node):
         self.declare_parameter("compressed_image_topic", self._topics["baseCameraCompressed"])
         self.declare_parameter("camera_max_fps", 0.0)
         self.declare_parameter("live_map_topic", self._topics["liveMap"])
+        self.declare_parameter("static_map_yaml", self._topics.get("staticMapYaml") or "")
         self._apply_topic_parameters()
 
         self._web_host = self.get_parameter("web_host").value
@@ -1913,7 +2041,7 @@ class UiNode(Node):
         self._plants = {}
         self._flower_counts = None
         self._external_report = None
-        self._map = None
+        self._map = self._load_static_map()
         self._nav_plan = None
         self._last_status_map_sent_at = 0.0
         self._robot_pose = None
@@ -1928,6 +2056,7 @@ class UiNode(Node):
         self._bed_observations = {}
         self._mapping_status = None
         self._task_status = None
+        self._checkpoint_status = None
         self._artifact_candidates = []
         self._artifact_candidates_received_at = None
         self._artifact_candidates_parse_error = ""
@@ -1936,6 +2065,7 @@ class UiNode(Node):
         self._cmd_vel_publisher = self.create_publisher(Twist, self._topics["cmdVel"], teleop_queue_depth)
         self._initial_pose_publisher = self.create_publisher(PoseWithCovarianceStamped, self._topics["initialPose"], 10) if self._topics.get("initialPose") else None
         self._goal_pose_publisher = self.create_publisher(PoseStamped, self._topics["goalPose"], 10) if self._topics.get("goalPose") else None
+        self._checkpoint_command_publisher = self.create_publisher(String, self._topics["checkpointCommand"], 10) if self._topics.get("checkpointCommand") else None
         self._manual_control_publisher = None
         if self._topics.get("manualControlState"):
             manual_control_qos = QoSProfile(
@@ -1963,6 +2093,8 @@ class UiNode(Node):
             self.create_subscription(String, self._topics["flowerCounts"], self._on_flower_counts, 10)
         if self._topics.get("bedEnvironment"):
             self.create_subscription(String, self._topics["bedEnvironment"], self._on_bed_environment, 10)
+        if self._topics.get("checkpointStatus"):
+            self.create_subscription(String, self._topics["checkpointStatus"], self._on_checkpoint_status, 10)
         self.create_subscription(BatteryState, self._topics["battery"], self._on_battery, 10)
         if PlantHealth is not None:
             self._try_create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
@@ -2025,6 +2157,7 @@ class UiNode(Node):
         self._topics["baseCameraRaw"] = None
         self._topics["baseCameraCompressed"] = configured_compressed_image
         self._topics["liveMap"] = self.get_parameter("live_map_topic").get_parameter_value().string_value
+        self._topics["staticMapYaml"] = self.get_parameter("static_map_yaml").get_parameter_value().string_value
 
     def _desired_camera_subscription(self):
         if self._active_page != "teleop":
@@ -2123,6 +2256,7 @@ class UiNode(Node):
                     "/api/navigation/initial_pose": node.set_initial_pose,
                     "/api/navigation/cancel": node.cancel_navigation,
                     "/api/navigation/home": node.go_home,
+                    "/api/checkpoint/next": node.move_to_next_checkpoint,
                     "/api/task_mode": node.set_task_mode,
                     "/api/take_control": node.take_control,
                     "/api/view": node.set_active_view,
@@ -2248,6 +2382,10 @@ class UiNode(Node):
                 "active": self._active_nav_goal_handle is not None,
                 "message": self._navigation_message(),
             },
+            "checkpoint": {
+                "commandAvailable": self._checkpoint_command_publisher is not None,
+                "status": copy.deepcopy(self._checkpoint_status),
+            },
             "behaviorAvailable": self._action_ready(self._behavior_client),
             "takeControl": {
                 "available": self._action_ready(self._behavior_client),
@@ -2276,12 +2414,94 @@ class UiNode(Node):
     def _status_map_payload(self):
         if self._map is None:
             return None
+        if self._map.get("source") == "static":
+            return self._map
         period_sec = max(1.0, float(self._topics.get("mapUpdatePeriodSec") or 10))
         now = time.monotonic()
         if now - self._last_status_map_sent_at < period_sec:
             return None
         self._last_status_map_sent_at = now
         return self._map
+
+    def _load_static_map(self) -> dict | None:
+        configured = str(self._topics.get("staticMapYaml") or "").strip()
+        if not configured:
+            return None
+        yaml_path = self._resolve_workspace_path(configured)
+        if yaml_path is None:
+            self.get_logger().warn(f"Static map YAML not found: {configured}")
+            return None
+        try:
+            payload = self._map_payload_from_yaml(yaml_path)
+        except (OSError, KeyError, ValueError, yaml.YAMLError) as exc:
+            self.get_logger().warn(f"Could not load static map {yaml_path}: {exc}")
+            return None
+        self.get_logger().info(f"Loaded static UI map from {yaml_path}")
+        return payload
+
+    def _resolve_workspace_path(self, path_text: str) -> Path | None:
+        path = Path(path_text).expanduser()
+        if path.is_absolute():
+            return path if path.exists() else None
+        candidates = [
+            Path.cwd() / path,
+            Path(__file__).resolve().parents[4] / path,
+            Path(__file__).resolve().parents[3] / path,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _map_payload_from_yaml(self, yaml_path: Path) -> dict:
+        with yaml_path.open("r", encoding="utf-8") as yaml_file:
+            metadata = yaml.safe_load(yaml_file)
+        if not isinstance(metadata, dict):
+            raise ValueError("map YAML must contain an object")
+
+        image_path = Path(str(metadata["image"]))
+        if not image_path.is_absolute():
+            image_path = yaml_path.parent / image_path
+        width, height, pixels = self._load_grayscale_pixels(image_path)
+
+        negate = int(metadata.get("negate", 0))
+        occupied_thresh = float(metadata.get("occupied_thresh", 0.65))
+        free_thresh = float(metadata.get("free_thresh", 0.25))
+        data = []
+        for y in range(height - 1, -1, -1):
+            row_start = y * width
+            for pixel in pixels[row_start : row_start + width]:
+                probability = pixel / 255.0 if negate else (255.0 - pixel) / 255.0
+                if probability > occupied_thresh:
+                    data.append(100)
+                elif probability < free_thresh:
+                    data.append(0)
+                else:
+                    data.append(-1)
+
+        origin = metadata.get("origin", [0.0, 0.0, 0.0])
+        return {
+            "width": width,
+            "height": height,
+            "resolution": float(metadata["resolution"]),
+            "origin": {
+                "x": float(origin[0]),
+                "y": float(origin[1]),
+                "yaw": yaw_from_map_origin(origin),
+            },
+            "data": data,
+            "frameId": "map",
+            "source": "static",
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _load_grayscale_pixels(self, image_path: Path) -> tuple[int, int, list[int]]:
+        if Image is None:
+            raise ValueError("Pillow is required to load the static map image")
+        with Image.open(image_path) as image:
+            grayscale = image.convert("L")
+            width, height = grayscale.size
+            return width, height, list(grayscale.getdata())
 
     def toggle_safety(self, _payload) -> dict:
         self._safety_paused = not self._safety_paused
@@ -2484,6 +2704,18 @@ class UiNode(Node):
         if self._home_pose is None:
             return {"ok": False, "message": "Home pose is not configured"}
         return self._send_navigation_pose(self._home_pose, "home")
+
+    def move_to_next_checkpoint(self, _payload) -> dict:
+        self._publish_twist(0.0, 0.0, 0.0)
+        if self._safety_paused:
+            return {"ok": False, "message": "START required before checkpoint navigation"}
+        if self._checkpoint_command_publisher is None:
+            return {"ok": False, "message": "Checkpoint command topic unavailable"}
+        msg = String()
+        msg.data = "next"
+        self._checkpoint_command_publisher.publish(msg)
+        self._last_navigation_message = "Requested next checkpoint"
+        return {"ok": True, "message": "Requested next checkpoint"}
 
     def inspect_bed(self, payload) -> dict:
         if self._safety_paused:
@@ -2953,6 +3185,12 @@ class UiNode(Node):
             "localized": bool(msg.localized),
             "activeMap": msg.active_map,
             "message": msg.message,
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _on_checkpoint_status(self, msg: String) -> None:
+        self._checkpoint_status = {
+            "message": msg.data,
             "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
 
