@@ -3030,10 +3030,8 @@ class UiNode(Node):
         }
 
     def _preferred_robot_pose(self):
-        if self._amcl_pose and time.monotonic() - self._amcl_pose.get("_receivedMonotonic", 0.0) < 5.0:
+        if self._amcl_pose:
             return self._public_robot_pose(self._amcl_pose)
-        if self._odom_pose:
-            return self._public_robot_pose(self._odom_pose)
         return None
 
     def _public_robot_pose(self, pose: dict) -> dict:
