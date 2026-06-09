@@ -93,6 +93,7 @@ def _lazy_node_without_ros():
     node._subscribed_image_topic = "/camera/color/image_raw/compressed"
     node._callback_group = object()
     node.get_logger = lambda: _Logger()
+    node._ensure_yolo_model_loaded = lambda: True
     return node
 
 
@@ -164,6 +165,17 @@ def test_analyze_goal_rejects_second_active_request():
 
     assert node._analyze_goal_callback(first_goal) == GoalResponse.ACCEPT
     assert node._analyze_goal_callback(second_goal) == GoalResponse.REJECT
+
+
+def test_relative_model_path_prefers_workspace_cwd(tmp_path, monkeypatch):
+    model_path = tmp_path / "models" / "flower_model.pt"
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"model")
+    monkeypatch.chdir(tmp_path)
+    node = object.__new__(FlowerDetectionNode)
+    node._model_path = "models/flower_model.pt"
+
+    assert node._resolve_model_path() == model_path
 
 
 def test_analyze_timeout_releases_lazy_subscription(monkeypatch):

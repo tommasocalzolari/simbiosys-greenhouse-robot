@@ -89,6 +89,8 @@ ros-humble-navigation2 = ">=1.1.20,<2"
 ros-humble-nav2-bringup = ">=1.1.20,<2"
 ros-humble-nav2-map-server = ">=1.1.20,<2"
 ros-humble-tf2-tools = ">=0.25.19,<0.26"
+pytorch-cpu = ">=2.5,<3"
+torchvision = ">=0.20,<1"
 ultralytics = ">=8.4.61,<9"
 pip = ">=26.1.2,<27"
 

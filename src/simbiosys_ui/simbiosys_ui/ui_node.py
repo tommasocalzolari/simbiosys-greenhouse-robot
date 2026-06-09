@@ -36,12 +36,13 @@ except ImportError:
 
 try:
     from simbiosys_interfaces.action import ExecuteBehavior
-    from simbiosys_interfaces.msg import BedObservation, BehaviorType, HarvestStatus, MappingStatus, PlantHealth, ScanProgress, TaskStatus
+    from simbiosys_interfaces.msg import BedObservation, BehaviorType, CurrentMission, HarvestStatus, MappingStatus, PlantHealth, ScanProgress, TaskStatus
     from simbiosys_interfaces.srv import SendNamedArmPose, SetRobotMode
 except ImportError:
     ExecuteBehavior = None
     BedObservation = None
     BehaviorType = None
+    CurrentMission = None
     HarvestStatus = None
     MappingStatus = None
     PlantHealth = None
@@ -81,6 +82,7 @@ DEFAULT_CONFIG = {
         "homePose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
         "mappingStatus": "simbiosys/mapping_status",
         "taskStatus": "simbiosys/task_status",
+        "currentMission": "simbiosys/current_mission",
         "scanProgress": "simbiosys/scan_progress",
         "harvestStatus": "simbiosys/harvest_status",
         "setTaskMode": "simbiosys/set_robot_mode",
@@ -499,7 +501,7 @@ INDEX_HTML = """<!doctype html>
                 <button id="navigate-target" disabled>Navigate</button>
                 <button id="cancel-navigation" disabled>Cancel Navigation</button>
                 <button id="go-home" disabled>Go Home</button>
-                <button id="checkpoint-next" disabled>Move to Next Checkpoint</button>
+                <button id="checkpoint-next" disabled>Start Mission Route</button>
               </div>
             </div>
             <p id="navigation-message">Navigation backend unavailable</p>
@@ -1857,8 +1859,12 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("cancel-navigation").disabled = state.safetyPaused || !data.navigation.active;
         document.getElementById("go-home").disabled = state.safetyPaused || !data.navigation.available;
         document.getElementById("checkpoint-next").disabled = state.safetyPaused || !state.checkpointCommandAvailable;
+        const mission = data.currentMission || null;
+        const missionMessage = mission && mission.message
+          ? `${mission.phase || "mission"} ${mission.activeBedId ? `bed ${mission.activeBedId}${mission.activeSide ? ` side ${mission.activeSide}` : ""}` : ""} ${mission.queueTotal ? `${mission.queueIndex}/${mission.queueTotal}` : ""}: ${mission.message}`
+          : "";
         const checkpointMessage = data.checkpoint && data.checkpoint.status ? data.checkpoint.status.message : "";
-        document.getElementById("navigation-message").textContent = checkpointMessage || data.navigation.message || (data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable");
+        document.getElementById("navigation-message").textContent = missionMessage || checkpointMessage || data.navigation.message || (data.navigation.available ? "Select a map position to navigate" : "Navigation backend unavailable");
         document.getElementById("take-control-message").textContent = state.manualControlActive ? "Manual teleop control active" : data.takeControl.message;
         const startMappingButton = document.getElementById("start-mapping");
         if (startMappingButton) {
@@ -2056,6 +2062,7 @@ class UiNode(Node):
         self._bed_observations = {}
         self._mapping_status = None
         self._task_status = None
+        self._current_mission = None
         self._checkpoint_status = None
         self._artifact_candidates = []
         self._artifact_candidates_received_at = None
@@ -2094,7 +2101,12 @@ class UiNode(Node):
         if self._topics.get("bedEnvironment"):
             self.create_subscription(String, self._topics["bedEnvironment"], self._on_bed_environment, 10)
         if self._topics.get("checkpointStatus"):
-            self.create_subscription(String, self._topics["checkpointStatus"], self._on_checkpoint_status, 10)
+            checkpoint_status_qos = QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.create_subscription(String, self._topics["checkpointStatus"], self._on_checkpoint_status, checkpoint_status_qos)
         self.create_subscription(BatteryState, self._topics["battery"], self._on_battery, 10)
         if PlantHealth is not None:
             self._try_create_subscription(PlantHealth, self._topics["typedPlantHealth"], self._on_typed_plant_health, 10)
@@ -2104,6 +2116,8 @@ class UiNode(Node):
             self._try_create_subscription(MappingStatus, self._topics["mappingStatus"], self._on_mapping_status, 10)
         if TaskStatus is not None:
             self._try_create_subscription(TaskStatus, self._topics["taskStatus"], self._on_task_status, 10)
+        if CurrentMission is not None and self._topics.get("currentMission"):
+            self._try_create_subscription(CurrentMission, self._topics["currentMission"], self._on_current_mission, 10)
         if ScanProgress is not None and self._topics.get("scanProgress"):
             self._try_create_subscription(ScanProgress, self._topics["scanProgress"], self._on_scan_progress, 10)
         if HarvestStatus is not None and self._topics.get("harvestStatus"):
@@ -2383,9 +2397,10 @@ class UiNode(Node):
                 "message": self._navigation_message(),
             },
             "checkpoint": {
-                "commandAvailable": self._checkpoint_command_publisher is not None,
+                "commandAvailable": self._action_ready(self._behavior_client),
                 "status": copy.deepcopy(self._checkpoint_status),
             },
+            "currentMission": copy.deepcopy(self._current_mission),
             "behaviorAvailable": self._action_ready(self._behavior_client),
             "takeControl": {
                 "available": self._action_ready(self._behavior_client),
@@ -2708,14 +2723,17 @@ class UiNode(Node):
     def move_to_next_checkpoint(self, _payload) -> dict:
         self._publish_twist(0.0, 0.0, 0.0)
         if self._safety_paused:
-            return {"ok": False, "message": "START required before checkpoint navigation"}
-        if self._checkpoint_command_publisher is None:
-            return {"ok": False, "message": "Checkpoint command topic unavailable"}
-        msg = String()
-        msg.data = "next"
-        self._checkpoint_command_publisher.publish(msg)
-        self._last_navigation_message = "Requested next checkpoint"
-        return {"ok": True, "message": "Requested next checkpoint"}
+            return {"ok": False, "message": "START required before mission navigation"}
+        if self._behavior_client is None or BehaviorType is None:
+            return {"ok": False, "message": "Mission backend unavailable"}
+        if not self._behavior_client.server_is_ready():
+            return {"ok": False, "message": "Mission backend unavailable"}
+        goal = ExecuteBehavior.Goal()
+        goal.behavior.type = BehaviorType.INSPECT_BED
+        goal.target_id = "all"
+        self._behavior_client.send_goal_async(goal)
+        self._last_navigation_message = "Started real mission route"
+        return {"ok": True, "message": "Started real mission route"}
 
     def inspect_bed(self, payload) -> dict:
         if self._safety_paused:
@@ -3187,6 +3205,29 @@ class UiNode(Node):
         }
 
     def _on_checkpoint_status(self, msg: String) -> None:
+        parsed = None
+        try:
+            parsed = json.loads(msg.data)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            message = parsed.get("message", msg.data)
+            next_target = parsed.get("next_target") or {}
+            active_target = parsed.get("active_target") or {}
+            arrived_target = parsed.get("arrived_target") or {}
+            self._checkpoint_status = {
+                "event": parsed.get("event", ""),
+                "state": parsed.get("state", ""),
+                "message": message,
+                "nextIndex": parsed.get("next_index", 0),
+                "routeLength": parsed.get("route_length", 0),
+                "nextTarget": next_target,
+                "activeTarget": active_target,
+                "arrivedTarget": arrived_target,
+                "error": bool(parsed.get("error", False)),
+                "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+            return
         self._checkpoint_status = {
             "message": msg.data,
             "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -3196,6 +3237,20 @@ class UiNode(Node):
         self._task_status = {
             "current_state": msg.current_state,
             "active": bool(msg.active),
+            "error": bool(msg.error),
+            "message": msg.message,
+            "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def _on_current_mission(self, msg) -> None:
+        self._current_mission = {
+            "missionId": msg.mission_id,
+            "phase": msg.phase,
+            "activeBedId": msg.active_bed_id,
+            "activeSide": msg.active_side,
+            "activeScanPositionId": msg.active_scan_position_id,
+            "queueIndex": int(msg.queue_index),
+            "queueTotal": int(msg.queue_total),
             "error": bool(msg.error),
             "message": msg.message,
             "receivedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),

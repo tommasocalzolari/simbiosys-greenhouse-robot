@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import threading
@@ -18,12 +19,13 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 
 from simbiosys_behavior.state_machine import MissionStateMachine
 from simbiosys_interfaces.action import (
     AnalyzePlantScan,
-    ExecuteBedSideScan,
     ExecuteBehavior,
     ExecuteScanPosition,
 )
@@ -64,6 +66,15 @@ class QueuedScanPosition:
     side: str
 
 
+@dataclass
+class CheckpointTarget:
+    label: str
+    scan_position: ScanPosition
+    side: str
+    pose: PoseStamped
+    target_distance_m: float = 0.0
+
+
 class FailureCode:
     """Shared behavior failure labels used in action results and status text."""
 
@@ -89,9 +100,11 @@ class MissionManagerNode(Node):
         self._topic_health = TopicHealth()
         self._topic_lock = threading.Lock()
         self._active_nav_goal_handle = None
-        self._active_bed_side_goal_handle = None
         self._active_scan_position_goal_handle = None
         self._active_plant_analysis_goal_handle = None
+        self._checkpoint_lock = threading.Lock()
+        self._latest_checkpoint_status: dict | None = None
+        self._latest_checkpoint_status_seq = 0
         self._latest_pose = PoseStamped()
         self._latest_path = Path()
         self._latest_plant_health = PlantHealth()
@@ -106,10 +119,6 @@ class MissionManagerNode(Node):
         self.declare_parameter("cmd_vel_topic", "/mirte_base_controller/cmd_vel")
         self.declare_parameter("nav2_action_name", "navigate_to_pose")
         self.declare_parameter(
-            "bed_side_scan_action_name",
-            "simbiosys/execute_bed_side_scan",
-        )
-        self.declare_parameter(
             "scan_position_action_name",
             "simbiosys/execute_scan_position",
         )
@@ -118,14 +127,11 @@ class MissionManagerNode(Node):
             "simbiosys/analyze_plant_scan",
         )
         self.declare_parameter("nav2_server_timeout_sec", 2.0)
-        self.declare_parameter("bed_side_scan_server_timeout_sec", 0.5)
         self.declare_parameter("scan_position_server_timeout_sec", 0.5)
         self.declare_parameter("plant_analysis_server_timeout_sec", 0.5)
         self.declare_parameter("require_localization_for_navigation", True)
-        self.declare_parameter("bed_side_scan_dry_run", True)
         self.declare_parameter("scan_position_dry_run", True)
         self.declare_parameter("plant_analysis_dry_run", False)
-        self.declare_parameter("min_flowers_per_bed_side", 1)
         self.declare_parameter("home_pose", [0.0, 0.0, 0.0])
         self.declare_parameter("publish_initial_pose_on_mission_start", True)
         self.declare_parameter("initial_pose_topic", "/initialpose")
@@ -138,6 +144,10 @@ class MissionManagerNode(Node):
         self.declare_parameter("plant_health_topic", "simbiosys/plant_health")
         self.declare_parameter("plant_analysis_timeout_sec", 5.0)
         self.declare_parameter("return_home_when_queue_empty", True)
+        self.declare_parameter("checkpoint_command_topic", "/checkpoint_commands")
+        self.declare_parameter("checkpoint_status_topic", "/checkpoint_status")
+        self.declare_parameter("checkpoint_ready_timeout_sec", 5.0)
+        self.declare_parameter("checkpoint_arrival_timeout_sec", 180.0)
 
         self._harvest_enabled = bool(self.get_parameter("harvest_enabled").value)
 
@@ -176,8 +186,24 @@ class MissionManagerNode(Node):
             self._string_parameter("cmd_vel_topic"),
             10,
         )
+        self._checkpoint_command_publisher = self.create_publisher(
+            String,
+            self._string_parameter("checkpoint_command_topic"),
+            10,
+        )
 
         self._subscribe_to_health_topics()
+        checkpoint_status_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            String,
+            self._string_parameter("checkpoint_status_topic"),
+            self._on_checkpoint_status,
+            checkpoint_status_qos,
+        )
 
         self.create_service(
             SetRobotMode,
@@ -206,12 +232,6 @@ class MissionManagerNode(Node):
                 self._string_parameter("nav2_action_name"),
                 callback_group=self._callback_group,
             )
-        self._bed_side_scan_client = ActionClient(
-            self,
-            ExecuteBedSideScan,
-            self._string_parameter("bed_side_scan_action_name"),
-            callback_group=self._callback_group,
-        )
         self._scan_position_client = ActionClient(
             self,
             ExecuteScanPosition,
@@ -344,6 +364,26 @@ class MissionManagerNode(Node):
     def _on_plant_health(self, msg: PlantHealth) -> None:
         self._latest_plant_health = msg
         self._latest_plant_health_time = time.monotonic()
+
+    def _on_checkpoint_status(self, msg: String) -> None:
+        try:
+            status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning(
+                f"Ignoring malformed checkpoint status: {msg.data}"
+            )
+            return
+        if not isinstance(status, dict):
+            return
+        with self._checkpoint_lock:
+            self._latest_checkpoint_status = status
+            self._latest_checkpoint_status_seq += 1
+
+    def _checkpoint_status_snapshot(self) -> tuple[dict | None, int]:
+        with self._checkpoint_lock:
+            if self._latest_checkpoint_status is None:
+                return None, self._latest_checkpoint_status_seq
+            return copy.deepcopy(self._latest_checkpoint_status), self._latest_checkpoint_status_seq
 
     def _health_snapshot(self) -> TopicHealth:
         with self._topic_lock:
@@ -638,80 +678,143 @@ class MissionManagerNode(Node):
             return False, message
         target_id = goal_handle.request.target_id.strip()
         mission_id = f"scan-{int(time.time())}"
-        queue = self._scan_queue_for_target(target_id)
-        if not queue:
+        self._publish_current_mission(
+            mission_id,
+            "waiting_for_checkpoint_ready",
+            "Waiting for checkpoint navigator",
+        )
+
+        ready, status_or_message = self._wait_for_checkpoint_ready(goal_handle)
+        if not ready:
+            message = str(status_or_message)
+            self._publish_current_mission(mission_id, "failed", message, error=True)
+            return False, message
+
+        _, reset_start_seq = self._checkpoint_status_snapshot()
+        self._publish_checkpoint_command("reset")
+        route_ready, status_or_message = self._wait_for_checkpoint_waiting(
+            goal_handle,
+            reset_start_seq,
+        )
+        if not route_ready:
+            message = str(status_or_message)
+            self._publish_current_mission(mission_id, "failed", message, error=True)
+            return False, message
+
+        status = status_or_message
+        queue_total = int(status.get("route_length", 0))
+        if queue_total <= 0:
             message = (
                 f"{FailureCode.PRECONDITION_FAILED}: "
-                "INSPECT_BED found no configured scan positions"
+                "checkpoint route has no targets"
             )
             self._publish_current_mission(mission_id, "failed", message, error=True)
             return False, message
 
-        self._publish_initial_pose_for_home()
-        self._publish_current_mission(
-            mission_id,
-            "localizing",
-            "Published home initial pose; waiting for localization inputs",
-            queue_index=0,
-            queue_total=len(queue),
-        )
-        localization_ok, localization_message = self._wait_for_mission_localization(
-            goal_handle,
-            mission_id,
-            len(queue),
-        )
-        if not localization_ok:
-            return False, localization_message
-
         skipped = 0
-        for index, queued_position in enumerate(queue):
+        completed = 0
+        while rclpy.ok():
             if goal_handle.is_cancel_requested:
                 self._cancel_active_work()
                 return False, "INSPECT_BED cancelled"
 
-            scan_position = queued_position.scan_position
-            target_pose = self._pose_from_scan_position(scan_position)
-            self._publish_current_mission(
-                mission_id,
-                "navigating",
-                f"Navigating to {scan_position.scan_position_id}",
-                queued_position,
-                index,
-                len(queue),
-                target_pose,
+            status, _seq = self._checkpoint_status_snapshot()
+            if status is None:
+                message = (
+                    f"{FailureCode.PRECONDITION_FAILED}: "
+                    "checkpoint status unavailable"
+                )
+                self._publish_current_mission(mission_id, "failed", message, error=True)
+                return False, message
+
+            queue_index = int(status.get("next_index", 0))
+            queue_total = int(status.get("route_length", queue_total))
+            if queue_index >= queue_total:
+                break
+
+            next_target = self._target_from_checkpoint_payload(
+                status.get("next_target")
             )
-            nav_success, nav_message = self._navigate_to_pose(
-                goal_handle,
-                target_pose.pose,
-                f"Navigate to {scan_position.scan_position_id}",
-                set_idle_on_success=False,
-            )
-            if not nav_success:
-                skipped += 1
+            if next_target is None:
+                message = (
+                    f"{FailureCode.PRECONDITION_FAILED}: "
+                    "checkpoint status did not include next target metadata"
+                )
+                self._publish_current_mission(
+                    mission_id,
+                    "failed",
+                    message,
+                    queue_index=queue_index,
+                    queue_total=queue_total,
+                    error=True,
+                )
+                return False, message
+
+            if not self._checkpoint_target_matches(target_id, next_target):
                 self._publish_current_mission(
                     mission_id,
                     "skipped",
-                    nav_message,
-                    queued_position,
-                    index,
-                    len(queue),
-                    target_pose,
-                    error=True,
+                    f"Skipping {next_target.label}; target_id filter='{target_id}'",
+                    QueuedScanPosition(next_target.scan_position, next_target.side),
+                    queue_index,
+                    queue_total,
+                    next_target.pose,
                 )
+                self._publish_checkpoint_command("skip")
+                skipped += 1
+                self._wait_for_checkpoint_waiting(goal_handle)
                 continue
 
             self._publish_current_mission(
                 mission_id,
+                "navigating",
+                f"Navigating to {next_target.scan_position.scan_position_id}",
+                QueuedScanPosition(next_target.scan_position, next_target.side),
+                queue_index,
+                queue_total,
+                next_target.pose,
+            )
+
+            _, start_seq = self._checkpoint_status_snapshot()
+            self._publish_checkpoint_command("next")
+            arrived_success, arrived_or_message = self._wait_for_checkpoint_arrival(
+                goal_handle,
+                start_seq,
+            )
+            if not arrived_success:
+                skipped += 1
+                nav_message = str(arrived_or_message)
+                self._publish_current_mission(
+                    mission_id,
+                    "skipped",
+                    nav_message,
+                    QueuedScanPosition(next_target.scan_position, next_target.side),
+                    queue_index,
+                    queue_total,
+                    next_target.pose,
+                    error=True,
+                )
+                continue
+
+            arrived_target = arrived_or_message
+            assert isinstance(arrived_target, CheckpointTarget)
+            queued_position = QueuedScanPosition(
+                arrived_target.scan_position,
+                arrived_target.side,
+            )
+            self._publish_current_mission(
+                mission_id,
                 "aligning",
-                f"Aligning at {scan_position.scan_position_id}",
+                f"Aligning at {arrived_target.scan_position.scan_position_id}",
                 queued_position,
-                index,
-                len(queue),
-                target_pose,
+                queue_index,
+                queue_total,
+                arrived_target.pose,
             )
             scan_success, scan_message = self._execute_scan_position(
                 goal_handle,
                 queued_position,
+                arrived_target.target_distance_m,
             )
             if not scan_success:
                 skipped += 1
@@ -720,21 +823,21 @@ class MissionManagerNode(Node):
                     "skipped",
                     scan_message,
                     queued_position,
-                    index,
-                    len(queue),
-                    target_pose,
+                    queue_index,
+                    queue_total,
+                    arrived_target.pose,
                     error=True,
                 )
                 continue
 
             self._publish_current_mission(
                 mission_id,
-                "scanning",
-                f"Requesting plant analysis at {scan_position.scan_position_id}",
+                "analyzing",
+                f"Requesting plant analysis at {arrived_target.scan_position.scan_position_id}",
                 queued_position,
-                index,
-                len(queue),
-                target_pose,
+                queue_index,
+                queue_total,
+                arrived_target.pose,
             )
             plant_ok, plant_message = self._execute_plant_analysis(
                 goal_handle,
@@ -748,71 +851,216 @@ class MissionManagerNode(Node):
                     "skipped",
                     plant_message,
                     queued_position,
-                    index,
-                    len(queue),
-                    target_pose,
+                    queue_index,
+                    queue_total,
+                    arrived_target.pose,
                     error=True,
                 )
                 continue
 
+            completed += 1
             self._publish_current_mission(
                 mission_id,
                 "completed_scan_position",
-                f"Completed {scan_position.scan_position_id}",
+                f"Completed {arrived_target.scan_position.scan_position_id}",
                 queued_position,
-                index,
-                len(queue),
-                target_pose,
+                queue_index + 1,
+                queue_total,
+                arrived_target.pose,
             )
             self._publish_scan_progress(
-                f"Completed {scan_position.scan_position_id}",
-                active_bed_id=scan_position.bed_id,
-                active_scan_position_id=scan_position.scan_position_id,
+                f"Completed {arrived_target.scan_position.scan_position_id}",
+                active_bed_id=arrived_target.scan_position.bed_id,
+                active_scan_position_id=arrived_target.scan_position.scan_position_id,
                 detection_status="plant_analysis_received",
                 latest_plant_health=self._latest_plant_health,
             )
 
-        if self._bool_parameter("return_home_when_queue_empty"):
-            home_pose = self._home_pose_stamped()
-            self._publish_current_mission(
-                mission_id,
-                "returning_home",
-                "Returning home",
-                queue_index=len(queue),
-                queue_total=len(queue),
-                target_pose=home_pose,
-            )
-            home_success, home_message = self._navigate_to_pose(
-                goal_handle,
-                home_pose.pose,
-                "Return home",
-                set_idle_on_success=False,
-            )
-            if not home_success:
-                self._publish_current_mission(
-                    mission_id,
-                    "failed",
-                    home_message,
-                    queue_index=len(queue),
-                    queue_total=len(queue),
-                    target_pose=home_pose,
-                    error=True,
-                )
-                return False, home_message
-
         message = (
             f"INSPECT_BED queued mission complete; "
-            f"completed={len(queue) - skipped}, skipped={skipped}"
+            f"completed={completed}, skipped={skipped}"
         )
         self._publish_current_mission(
             mission_id,
             "complete",
             message,
-            queue_index=len(queue),
-            queue_total=len(queue),
+            queue_index=queue_total,
+            queue_total=queue_total,
         )
         self._set_mode_for_behavior(BehaviorType.IDLE)
         return True, message
+
+    def _publish_checkpoint_command(self, command: str) -> None:
+        msg = String()
+        msg.data = command
+        self._checkpoint_command_publisher.publish(msg)
+
+    def _wait_for_checkpoint_ready(self, goal_handle) -> tuple[bool, dict | str]:
+        deadline = time.monotonic() + self._double_parameter(
+            "checkpoint_ready_timeout_sec"
+        )
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            status, _seq = self._checkpoint_status_snapshot()
+            if status is not None and int(status.get("route_length", 0)) > 0:
+                event = str(status.get("event", ""))
+                state = str(status.get("state", ""))
+                if event in ("ready", "reset", "status", "arrived") or state == "waiting":
+                    return True, status
+            if time.monotonic() >= deadline:
+                return (
+                    False,
+                    f"{FailureCode.PRECONDITION_FAILED}: checkpoint navigator is not ready",
+                )
+            time.sleep(0.1)
+        return False, "ROS shutdown"
+
+    def _wait_for_checkpoint_waiting(
+        self,
+        goal_handle,
+        min_seq: int = -1,
+    ) -> tuple[bool, dict | str]:
+        deadline = time.monotonic() + self._double_parameter(
+            "checkpoint_ready_timeout_sec"
+        )
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            status, seq = self._checkpoint_status_snapshot()
+            if (
+                status is not None
+                and seq > min_seq
+                and str(status.get("state", "")) == "waiting"
+            ):
+                return True, status
+            if time.monotonic() >= deadline:
+                return (
+                    False,
+                    f"{FailureCode.PRECONDITION_FAILED}: checkpoint navigator did not become idle",
+                )
+            time.sleep(0.1)
+        return False, "ROS shutdown"
+
+    def _wait_for_checkpoint_arrival(
+        self,
+        goal_handle,
+        start_seq: int,
+    ) -> tuple[bool, CheckpointTarget | str]:
+        deadline = time.monotonic() + self._double_parameter(
+            "checkpoint_arrival_timeout_sec"
+        )
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                self._cancel_active_work()
+                return False, "INSPECT_BED cancelled"
+            status, seq = self._checkpoint_status_snapshot()
+            if status is not None and seq > start_seq:
+                if bool(status.get("error", False)):
+                    return False, str(status.get("message", "checkpoint failed"))
+                if str(status.get("event", "")) == "arrived":
+                    target = self._target_from_checkpoint_payload(
+                        status.get("arrived_target")
+                    )
+                    if target is None:
+                        return (
+                            False,
+                            f"{FailureCode.PRECONDITION_FAILED}: arrived checkpoint has no mission metadata",
+                        )
+                    return True, target
+            if time.monotonic() >= deadline:
+                return (
+                    False,
+                    f"{FailureCode.EXECUTION_FAILED}: timed out waiting for checkpoint arrival",
+                )
+            time.sleep(0.1)
+        return False, "ROS shutdown"
+
+    def _target_from_checkpoint_payload(
+        self,
+        payload,
+    ) -> CheckpointTarget | None:
+        if not isinstance(payload, dict):
+            return None
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        pose_payload = payload.get("pose", {})
+        if not isinstance(pose_payload, dict):
+            return None
+
+        label = str(payload.get("label") or metadata.get("scan_position_id") or "")
+        bed_id = str(metadata.get("bed_id") or "").strip()
+        side = str(metadata.get("side") or "").strip().lower()
+        scan_position_id = str(
+            metadata.get("scan_position_id") or label or f"checkpoint_{metadata.get('order', 0)}"
+        ).strip()
+        if not bed_id or side not in ("a", "b") or not scan_position_id:
+            return None
+
+        pose = self._pose_stamped_from_checkpoint_payload(pose_payload)
+        if pose is None:
+            return None
+
+        scan_position = ScanPosition()
+        scan_position.scan_position_id = scan_position_id
+        scan_position.bed_id = bed_id
+        scan_position.base_pose.x = float(pose.pose.position.x)
+        scan_position.base_pose.y = float(pose.pose.position.y)
+        scan_position.base_pose.theta = self._yaw_from_pose(pose.pose)
+        scan_position.order = int(metadata.get("order", 0))
+        scan_position.enabled = True
+
+        target_distance_m = 0.0
+        raw_target_distance = metadata.get("target_distance_m")
+        if raw_target_distance is not None:
+            try:
+                target_distance_m = float(raw_target_distance)
+            except (TypeError, ValueError):
+                target_distance_m = 0.0
+
+        return CheckpointTarget(
+            label=label or scan_position_id,
+            scan_position=scan_position,
+            side=side,
+            pose=pose,
+            target_distance_m=target_distance_m,
+        )
+
+    def _pose_stamped_from_checkpoint_payload(self, pose_payload: dict) -> PoseStamped | None:
+        position = pose_payload.get("position", {})
+        orientation = pose_payload.get("orientation", {})
+        if not isinstance(position, dict) or not isinstance(orientation, dict):
+            return None
+        pose = PoseStamped()
+        pose.header.frame_id = str(pose_payload.get("frame_id") or "map")
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position.x = float(position.get("x", 0.0))
+        pose.pose.position.y = float(position.get("y", 0.0))
+        pose.pose.position.z = float(position.get("z", 0.0))
+        pose.pose.orientation.x = float(orientation.get("x", 0.0))
+        pose.pose.orientation.y = float(orientation.get("y", 0.0))
+        pose.pose.orientation.z = float(orientation.get("z", 0.0))
+        pose.pose.orientation.w = float(orientation.get("w", 1.0))
+        return pose
+
+    def _checkpoint_target_matches(
+        self,
+        target_id: str,
+        target: CheckpointTarget,
+    ) -> bool:
+        normalized = target_id.strip().lower()
+        if not normalized or normalized == "all":
+            return True
+        bed_side = f"{target.scan_position.bed_id}:{target.side}".lower()
+        return normalized in (
+            target.scan_position.bed_id.lower(),
+            target.scan_position.scan_position_id.lower(),
+            target.label.lower(),
+            bed_side,
+        )
 
     def _wait_for_mission_localization(
         self,
@@ -866,6 +1114,7 @@ class MissionManagerNode(Node):
         self,
         goal_handle,
         queued_position: QueuedScanPosition,
+        target_distance_m: float = 0.0,
     ) -> tuple[bool, str]:
         timeout_sec = self._double_parameter("scan_position_server_timeout_sec")
         if not self._scan_position_client.wait_for_server(timeout_sec=timeout_sec):
@@ -877,8 +1126,10 @@ class MissionManagerNode(Node):
         goal = ExecuteScanPosition.Goal()
         goal.scan_position = queued_position.scan_position
         goal.side = queued_position.side
-        goal.target_distance_m = float(
-            self._double_parameter("scan_position_target_distance_m")
+        goal.target_distance_m = (
+            float(target_distance_m)
+            if target_distance_m > 0.0
+            else float(self._double_parameter("scan_position_target_distance_m"))
         )
         goal.hold_duration_sec = float(
             self._double_parameter("scan_position_hold_duration_sec")
@@ -1109,107 +1360,6 @@ class MissionManagerNode(Node):
         pose.pose.orientation.w = math.cos(float(yaw) / 2.0)
         return pose
 
-    def _execute_bed_side_scan(
-        self,
-        goal_handle,
-        bed_id: str,
-        side: str,
-    ) -> tuple[bool, str]:
-        timeout_sec = self._double_parameter("bed_side_scan_server_timeout_sec")
-        if not self._bed_side_scan_client.wait_for_server(timeout_sec=timeout_sec):
-            message = (
-                f"{FailureCode.PRECONDITION_FAILED}: "
-                "bed-side scan controller action is unavailable"
-            )
-            self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
-            return False, message
-
-        goal = ExecuteBedSideScan.Goal()
-        goal.bed_id = bed_id
-        goal.side = side
-        goal.start_endpoint = self._side_endpoint(
-            bed_id,
-            side,
-            "start",
-            goal_handle.request.target_pose,
-        )
-        goal.end_endpoint = self._side_endpoint(
-            bed_id,
-            side,
-            "end",
-            goal_handle.request.target_pose,
-        )
-        goal.min_flower_count = max(0, self._int_parameter("min_flowers_per_bed_side"))
-        goal.harvest_enabled = self._harvest_enabled
-        goal.dry_run = self._bool_parameter("bed_side_scan_dry_run")
-
-        message = (
-            f"Starting bed-side scan controller for {bed_id}:{side}; "
-            f"dry_run={goal.dry_run}"
-        )
-        self._publish_scan_progress(
-            message,
-            active_bed_id=bed_id,
-            active_scan_position_id=f"{bed_id}:{side}",
-            detection_status="starting_bed_side_scan",
-        )
-        self._publish_feedback(goal_handle, message, 0.25)
-
-        send_goal_future = self._bed_side_scan_client.send_goal_async(
-            goal,
-            feedback_callback=lambda feedback: self._on_bed_side_scan_feedback(
-                goal_handle,
-                feedback,
-            ),
-        )
-        send_deadline = time.monotonic() + 5.0
-        while rclpy.ok() and not send_goal_future.done():
-            if goal_handle.is_cancel_requested:
-                self._cancel_active_work()
-                return False, "INSPECT_BED cancelled"
-            if time.monotonic() >= send_deadline:
-                message = (
-                    f"{FailureCode.PRECONDITION_FAILED}: "
-                    "timed out sending bed-side scan goal"
-                )
-                self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
-                return False, message
-            time.sleep(0.05)
-
-        bed_side_goal_handle = send_goal_future.result()
-        if bed_side_goal_handle is None or not bed_side_goal_handle.accepted:
-            message = f"{FailureCode.PLANNING_FAILED}: bed-side scan rejected"
-            self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
-            return False, message
-
-        self._active_bed_side_goal_handle = bed_side_goal_handle
-        result_future = bed_side_goal_handle.get_result_async()
-        while rclpy.ok() and not result_future.done():
-            if goal_handle.is_cancel_requested:
-                self._cancel_active_work()
-                return False, "INSPECT_BED cancelled"
-            time.sleep(0.1)
-
-        self._active_bed_side_goal_handle = None
-        wrapped_result = result_future.result()
-        if wrapped_result is None:
-            message = f"{FailureCode.EXECUTION_FAILED}: bed-side scan returned no result"
-            self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
-            return False, message
-
-        result = wrapped_result.result
-        if result.success:
-            message = (
-                f"INSPECT_BED completed for {bed_id}:{side}; "
-                f"flowers_detected={result.flowers_detected}"
-            )
-            self._publish_feedback(goal_handle, message, 1.0)
-            return True, message
-
-        message = result.message or f"{FailureCode.EXECUTION_FAILED}: bed-side scan failed"
-        self._publish_scan_progress(message, active_bed_id=bed_id, error=True)
-        return False, message
-
     def _execute_inspect_flower(self, goal_handle) -> tuple[bool, str]:
         success, message = self._set_mode_for_behavior(BehaviorType.INSPECT_FLOWER)
         if not success:
@@ -1281,16 +1431,6 @@ class MissionManagerNode(Node):
         self._publish_feedback(goal_handle, "Nav2 driving", progress)
         self._publish_navigation_status("driving", "Nav2 driving")
 
-    def _on_bed_side_scan_feedback(self, goal_handle, feedback_msg) -> None:
-        feedback = feedback_msg.feedback
-        step = (
-            f"Bed-side scan {feedback.phase}: "
-            f"flowers={feedback.flowers_detected}, retries={feedback.retry_count}"
-        )
-        if feedback.message:
-            step = feedback.message
-        self._publish_feedback(goal_handle, step, feedback.progress)
-
     def _on_scan_position_feedback(self, goal_handle, feedback_msg) -> None:
         feedback = feedback_msg.feedback
         step = (
@@ -1317,12 +1457,6 @@ class MissionManagerNode(Node):
             except Exception as exc:
                 self.get_logger().warn(f"Could not cancel Nav2 goal: {exc}")
             self._active_nav_goal_handle = None
-        if self._active_bed_side_goal_handle is not None:
-            try:
-                self._active_bed_side_goal_handle.cancel_goal_async()
-            except Exception as exc:
-                self.get_logger().warn(f"Could not cancel bed-side scan goal: {exc}")
-            self._active_bed_side_goal_handle = None
         if self._active_scan_position_goal_handle is not None:
             try:
                 self._active_scan_position_goal_handle.cancel_goal_async()

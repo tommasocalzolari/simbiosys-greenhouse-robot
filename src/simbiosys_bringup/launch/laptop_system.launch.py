@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.actions import Node
 
 
@@ -13,6 +14,7 @@ def generate_launch_description():
     """
     image_topic = LaunchConfiguration("image_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     web_host = LaunchConfiguration("web_host")
     web_port = LaunchConfiguration("web_port")
     odom_topic = LaunchConfiguration("odom_topic")
@@ -24,6 +26,8 @@ def generate_launch_description():
     gripper_max_effort = LaunchConfiguration("gripper_max_effort")
     motion_duration_sec = LaunchConfiguration("motion_duration_sec")
     bed_side_enable_motion = LaunchConfiguration("bed_side_enable_motion")
+    plant_analysis_dry_run = LaunchConfiguration("plant_analysis_dry_run")
+    flower_model_path = LaunchConfiguration("flower_model_path")
     operator_led_enabled = LaunchConfiguration("operator_led_enabled")
     start_ui = LaunchConfiguration("start_ui")
     start_bed_side_alignment = LaunchConfiguration("start_bed_side_alignment")
@@ -53,9 +57,19 @@ def generate_launch_description():
                 "bed_side_enable_motion",
                 default_value="false",
                 description=(
-                    "Enable physical cmd_vel output from the bed-side controller. "
+                    "Enable physical cmd_vel output from the scan-pose alignment controller. "
                     "Keep false until perception alignment and robot safety are validated."
                 ),
+            ),
+            DeclareLaunchArgument(
+                "plant_analysis_dry_run",
+                default_value="true",
+                description="Keep plant analysis dry-run until the YOLO model and camera are validated.",
+            ),
+            DeclareLaunchArgument(
+                "flower_model_path",
+                default_value="models/flower_model.pt",
+                description="YOLO model used by flower_detection_node for real plant analysis.",
             ),
             DeclareLaunchArgument(
                 "operator_led_enabled",
@@ -118,6 +132,11 @@ def generate_launch_description():
                 description="Velocity topic exposed by the MIRTE base controller.",
             ),
             DeclareLaunchArgument(
+                "use_sim_time",
+                default_value="false",
+                description="Use simulation clock for laptop-side mission nodes.",
+            ),
+            DeclareLaunchArgument(
                 "web_host",
                 default_value="0.0.0.0",
                 description="Host interface for the SimBioSys web UI.",
@@ -167,16 +186,16 @@ def generate_launch_description():
                 executable="mission_manager_node",
                 name="mission_manager_node",
                 output="screen",
-            ),
-            Node(
-                package="simbiosys_behavior",
-                executable="bed_side_controller_node",
-                name="bed_side_controller_node",
-                output="screen",
                 parameters=[
                     {
                         "cmd_vel_topic": cmd_vel_topic,
-                        "enable_motion": bed_side_enable_motion,
+                        "odom_topic": odom_topic,
+                        "scan_topic": scan_topic,
+                        "plant_analysis_dry_run": ParameterValue(
+                            plant_analysis_dry_run,
+                            value_type=bool,
+                        ),
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                     }
                 ],
             ),
@@ -189,6 +208,7 @@ def generate_launch_description():
                     {
                         "cmd_vel_topic": cmd_vel_topic,
                         "enable_motion": bed_side_enable_motion,
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                     }
                 ],
             ),
@@ -220,6 +240,7 @@ def generate_launch_description():
                     {
                         "scan_topic": scan_topic,
                         "surface_region": bed_side_surface_region,
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                     }
                 ],
             ),
@@ -228,7 +249,13 @@ def generate_launch_description():
                 executable="flower_detection_node",
                 name="flower_detection_node",
                 output="screen",
-                parameters=[{"image_topic": image_topic}],
+                parameters=[
+                    {
+                        "image_topic": image_topic,
+                        "model_path": flower_model_path,
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                    }
+                ],
             ),
             Node(
                 package="simbiosys_mapping",
@@ -239,6 +266,7 @@ def generate_launch_description():
                     {
                         "scan_topic": scan_topic,
                         "odom_topic": odom_topic,
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                     }
                 ],
             ),
@@ -288,6 +316,7 @@ def generate_launch_description():
                         "cmd_vel_topic": cmd_vel_topic,
                         "web_host": web_host,
                         "web_port": web_port,
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                     }
                 ],
             ),

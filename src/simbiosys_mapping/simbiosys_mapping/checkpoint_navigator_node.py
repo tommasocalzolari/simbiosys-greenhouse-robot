@@ -49,10 +49,15 @@ class CheckpointNavigatorNode(Node):
             NavigateToPose,
             self._string_parameter("nav2_action_name"),
         )
+        status_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self._status_pub = self.create_publisher(
             String,
             self._string_parameter("status_topic"),
-            10,
+            status_qos,
         )
         marker_qos = QoSProfile(
             depth=1,
@@ -239,6 +244,7 @@ class CheckpointNavigatorNode(Node):
             self._publish_status(
                 "arrived",
                 f"Arrived at {label}. Waiting for next command.",
+                arrived_target=target,
             )
             return
 
@@ -294,13 +300,16 @@ class CheckpointNavigatorNode(Node):
         )
         if checkpoints:
             for checkpoint in checkpoints:
+                label = checkpoint.get("label", f"checkpoint_{len(route) + 1}")
                 route.append(
                     {
-                        "label": checkpoint.get(
-                            "label",
-                            f"checkpoint_{len(route) + 1}",
-                        ),
+                        "label": label,
                         "pose": self._pose_from_dict(checkpoint["pose"]),
+                        "metadata": self._metadata_from_checkpoint(
+                            checkpoint,
+                            label,
+                            len(route) + 1,
+                        ),
                     }
                 )
         else:
@@ -310,10 +319,16 @@ class CheckpointNavigatorNode(Node):
             )
             for bed in beds:
                 pose_data = bed.get("start_pose") or self._legacy_bed_pose(bed)
+                label = f"flower_bed_{bed.get('bed_id', len(route) + 1)}"
                 route.append(
                     {
-                        "label": f"flower_bed_{bed.get('bed_id', len(route) + 1)}",
+                        "label": label,
                         "pose": self._pose_from_dict(pose_data),
+                        "metadata": self._metadata_from_checkpoint(
+                            bed,
+                            label,
+                            len(route) + 1,
+                        ),
                     }
                 )
 
@@ -485,6 +500,61 @@ class CheckpointNavigatorNode(Node):
         pose.pose.orientation.w = float(orientation.get("w", 1.0))
         return pose
 
+    def _metadata_from_checkpoint(
+        self,
+        checkpoint: dict[str, Any],
+        label: str,
+        order: int,
+    ) -> dict[str, Any]:
+        metadata = checkpoint.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        bed_id = checkpoint.get("bed_id", metadata.get("bed_id", ""))
+        side = checkpoint.get("side", metadata.get("side", ""))
+        scan_position_id = checkpoint.get(
+            "scan_position_id",
+            metadata.get("scan_position_id", label),
+        )
+        target_distance_m = checkpoint.get(
+            "target_distance_m",
+            metadata.get("target_distance_m", None),
+        )
+
+        return {
+            "bed_id": str(bed_id),
+            "side": str(side).lower(),
+            "scan_position_id": str(scan_position_id or label),
+            "order": int(checkpoint.get("order", metadata.get("order", order))),
+            "target_distance_m": target_distance_m,
+        }
+
+    def _target_payload(self, target: dict[str, Any] | None) -> dict[str, Any] | None:
+        if target is None:
+            return None
+        return {
+            "label": target["label"],
+            "metadata": copy.deepcopy(target.get("metadata", {})),
+            "pose": self._pose_to_dict(target["pose"]),
+        }
+
+    def _pose_to_dict(self, pose_msg: PoseStamped) -> dict[str, Any]:
+        pose = pose_msg.pose
+        return {
+            "frame_id": pose_msg.header.frame_id or "map",
+            "position": {
+                "x": float(pose.position.x),
+                "y": float(pose.position.y),
+                "z": float(pose.position.z),
+            },
+            "orientation": {
+                "x": float(pose.orientation.x),
+                "y": float(pose.orientation.y),
+                "z": float(pose.orientation.z),
+                "w": float(pose.orientation.w),
+            },
+        }
+
     def _quaternion_from_yaw(self, yaw: float) -> dict[str, float]:
         return {
             "x": 0.0,
@@ -498,6 +568,7 @@ class CheckpointNavigatorNode(Node):
         event: str,
         message: str,
         error: bool = False,
+        arrived_target: dict[str, Any] | None = None,
     ) -> None:
         status = {
             "event": event,
@@ -507,10 +578,9 @@ class CheckpointNavigatorNode(Node):
             "current_start": "home_pose",
             "next_index": self._next_index,
             "route_length": len(self._route),
-            "next_target": self._next_target_label(),
-            "active_target": (
-                self._active_target["label"] if self._active_target is not None else None
-            ),
+            "next_target": self._target_payload(self._next_target()),
+            "active_target": self._target_payload(self._active_target),
+            "arrived_target": self._target_payload(arrived_target),
         }
         msg = String()
         msg.data = json.dumps(status)
@@ -520,10 +590,10 @@ class CheckpointNavigatorNode(Node):
         else:
             self.get_logger().info(message)
 
-    def _next_target_label(self) -> str | None:
+    def _next_target(self) -> dict[str, Any] | None:
         if self._next_index >= len(self._route):
             return None
-        return self._route[self._next_index]["label"]
+        return self._route[self._next_index]
 
 
 def main(args=None) -> None:

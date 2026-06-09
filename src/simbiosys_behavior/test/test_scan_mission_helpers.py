@@ -1,6 +1,7 @@
 import math
 
 import pytest
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Twist
 
 from simbiosys_behavior.mission_manager_node import (
@@ -27,6 +28,7 @@ class _Publisher:
 def _mission_manager_without_ros():
     node = object.__new__(MissionManagerNode)
     node.get_logger = lambda: _Logger()
+    node.get_clock = lambda: type("Clock", (), {"now": lambda _self: type("Now", (), {"to_msg": lambda _now: Time()})()})()
     return node
 
 
@@ -86,6 +88,35 @@ def test_scan_queue_filters_bed_side_target():
     assert [entry.scan_position.scan_position_id for entry in filtered] == [
         "bed_1_b_1"
     ]
+
+
+def test_checkpoint_payload_builds_scan_target():
+    node = _mission_manager_without_ros()
+    payload = {
+        "label": "checkpoint_1",
+        "metadata": {
+            "bed_id": "1",
+            "side": "a",
+            "scan_position_id": "bed_1_a_1",
+            "order": 1,
+            "target_distance_m": 0.42,
+        },
+        "pose": {
+            "frame_id": "map",
+            "position": {"x": 1.0, "y": 2.0, "z": 0.0},
+            "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        },
+    }
+
+    target = node._target_from_checkpoint_payload(payload)
+
+    assert target is not None
+    assert target.scan_position.scan_position_id == "bed_1_a_1"
+    assert target.scan_position.bed_id == "1"
+    assert target.side == "a"
+    assert target.scan_position.base_pose.x == 1.0
+    assert target.scan_position.base_pose.y == 2.0
+    assert target.target_distance_m == 0.42
 
 
 class _Future:

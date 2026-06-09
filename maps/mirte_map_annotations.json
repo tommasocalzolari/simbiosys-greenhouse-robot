@@ -19,6 +19,10 @@
     {
       "checkpoint_id": 1,
       "label": "checkpoint_1",
+      "bed_id": "1",
+      "side": "a",
+      "scan_position_id": "bed_1_a_1",
+      "order": 1,
       "frame_id": "map",
       "pose": {
         "frame_id": "map",
@@ -51,6 +55,10 @@
     {
       "checkpoint_id": 2,
       "label": "checkpoint_2",
+      "bed_id": "1",
+      "side": "a",
+      "scan_position_id": "bed_1_a_2",
+      "order": 2,
       "frame_id": "map",
       "pose": {
         "frame_id": "map",
@@ -83,6 +91,10 @@
     {
       "checkpoint_id": 3,
       "label": "checkpoint_3",
+      "bed_id": "1",
+      "side": "b",
+      "scan_position_id": "bed_1_b_1",
+      "order": 3,
       "frame_id": "map",
       "pose": {
         "frame_id": "map",
@@ -115,6 +127,10 @@
     {
       "checkpoint_id": 4,
       "label": "checkpoint_4",
+      "bed_id": "1",
+      "side": "b",
+      "scan_position_id": "bed_1_b_2",
+      "order": 4,
       "frame_id": "map",
       "pose": {
         "frame_id": "map",
@@ -147,6 +163,10 @@
     {
       "checkpoint_id": 5,
       "label": "checkpoint_5",
+      "bed_id": "2",
+      "side": "a",
+      "scan_position_id": "bed_2_a_1",
+      "order": 5,
       "frame_id": "map",
       "pose": {
         "frame_id": "map",

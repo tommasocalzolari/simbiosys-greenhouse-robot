@@ -40,7 +40,7 @@ class FlowerDetectionNode(Node):
 
     def __init__(self) -> None:
         super().__init__("flower_detection_node")
-        default_model_path = "models/flower_model (Copy).pt"
+        default_model_path = "models/flower_model.pt"
         self.declare_parameter("image_topic", "/camera/color/image_raw")
         self.declare_parameter("use_compressed", True)
         self.declare_parameter("depth_topic", "/camera/depth/image_raw")
@@ -98,7 +98,14 @@ class FlowerDetectionNode(Node):
 
         self._bridge = CvBridge()
         self._latest_depth_m: np.ndarray | None = None
-        self._yolo_model = self._load_yolo_model()
+        self._resolved_model_path = self._resolve_model_path()
+        self._model_path_exists = self._resolved_model_path.exists()
+        self._yolo_model = None
+        self._yolo_model_load_attempted = False
+        if not self._model_path_exists:
+            self.get_logger().warning(
+                f"YOLO model not found at {self._resolved_model_path}"
+            )
         self._callback_group = ReentrantCallbackGroup()
         self._analysis_condition = threading.Condition()
         self._analysis_seq = 0
@@ -267,6 +274,16 @@ class FlowerDetectionNode(Node):
             return result
 
         timeout_sec = float(goal.timeout_sec) if goal.timeout_sec > 0.0 else 5.0
+        if not self._ensure_yolo_model_loaded():
+            result.success = False
+            result.message = (
+                f"PRECONDITION_FAILED: YOLO model unavailable at "
+                f"{self._resolved_model_path}"
+            )
+            goal_handle.abort()
+            self._clear_active_request()
+            return result
+
         with self._analysis_condition:
             start_seq = self._analysis_seq
             self._active_scan_context = goal
@@ -394,14 +411,27 @@ class FlowerDetectionNode(Node):
             self._analysis_condition.notify_all()
             return True
 
-    def _load_yolo_model(self):
+    def _resolve_model_path(self) -> Path:
         model_path = Path(self._model_path).expanduser()
-        if not model_path.is_absolute():
-            model_path = Path(__file__).parent / model_path
+        if model_path.is_absolute():
+            return model_path
+        cwd_model_path = Path.cwd() / model_path
+        if cwd_model_path.exists():
+            return cwd_model_path
+        return Path(__file__).parent / model_path
 
-        if not model_path.exists():
-            self.get_logger().warning(f"YOLO model not found at {model_path}")
-            return None
+    def _ensure_yolo_model_loaded(self) -> bool:
+        if self._yolo_model is not None:
+            return True
+        if self._yolo_model_load_attempted:
+            return False
+        self._yolo_model_load_attempted = True
+        self._model_path_exists = self._resolved_model_path.exists()
+        if not self._model_path_exists:
+            self.get_logger().warning(
+                f"YOLO model not found at {self._resolved_model_path}"
+            )
+            return False
 
         try:
             from ultralytics import YOLO
@@ -410,18 +440,19 @@ class FlowerDetectionNode(Node):
             return None
 
         try:
-            return YOLO(str(model_path))
+            self._yolo_model = YOLO(str(self._resolved_model_path))
+            return True
         except Exception as exc:  # noqa: BLE001 - keep node alive if model loading fails.
             self.get_logger().warning(
-                f"Could not load YOLO model from {model_path}: {exc}"
+                f"Could not load YOLO model from {self._resolved_model_path}: {exc}"
             )
-            return None
+            return False
 
     def _detect_frame(self, frame: np.ndarray) -> tuple[list[FlowerDetection], bool]:
         return self._detect_with_yolo(frame)
 
     def _detect_with_yolo(self, frame: np.ndarray) -> tuple[list[FlowerDetection], bool]:
-        if self._yolo_model is None:
+        if not self._ensure_yolo_model_loaded():
             return [], False
 
         results = self._yolo_model.predict(frame, conf=0.4, iou=0.5, verbose=False)
