@@ -17,6 +17,18 @@
 /frames_*.gv
 /frames_*.pdf
 
+# Generated runtime logs
+*.log
+
+# Local debug captures
+/frame_*.jpg
+/frame_wrist_*.jpg
+/media/Screenshot from Screencast*.png
+/debug_captures/
+
+# Local duplicate model exports
+src/simbiosys_perception/simbiosys_perception/models/* (Copy).pt
+
 # Python cache files
 __pycache__/
 *.py[cod]
@@ -26,4 +38,5 @@ __pycache__/
 
 # Local editor and agent state
 .codex/
+.agents/
 .vscode/

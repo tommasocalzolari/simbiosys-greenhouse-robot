@@ -3,10 +3,36 @@
 ROS 2-based greenhouse robotics system for autonomous navigation, plant-health monitoring, operator interaction, and mobile manipulation on the MIRTE Master platform.
 
 <p align="center">
-  <img src="media/robot_demo.gif" alt="SimBioSys robot demo" width="650">
+  <img src="media/MIRTEMasterV2.jpg" alt="The MIRTE Master V2" width="650">
   <br>
-  <em>SimBioSys performing autonomous greenhouse inspection and navigation.</em>
+  <em>The MIRTE Master V2</em>
 </p>
+
+---
+
+## Contributors
+
+**Group:** 6<br>
+**Submission date:** 10/06/2026
+
+<table>
+  <tr>
+    <td>
+
+| Name              | Student Number |
+|-------------------|----------------|
+| Raaf ter Woerds   | 5368537        |
+| Tommaso Calzolari | 6430600        |
+| Olivier Boertje   | 5407346        |
+| Luca Sackmann     | 6376754        |
+| Mark Soldaat      | 5398118        |
+
+  </td>
+  <td style="vertical-align: middle; padding-left: 20px;">
+    <img src="media/SimBioSys_logov2.png" alt="Group logo" height="180"/>
+  </td>
+  </tr>
+</table>
 
 ---
 
@@ -27,33 +53,67 @@ The project goal was to build a practical mobile robot prototype able to:
 
 ---
 
-## Demo Media
+## Functional Flow
 
-Recommended media to add to this section:
+<p align="center">
+  <img src="media/updated_functional_flow.png" alt="SimBioSys functional flow chart" width="850">
+  <br>
+  <em>Functional flow of the SimBioSys greenhouse robot system.</em>
+</p>
+
+---
+
+## Media
+
+### Perception
 
 <table>
   <tr>
     <td align="center">
-      <img src="media/slam_navigation.gif" alt="SLAM and navigation demo" width="360">
+      <img src="media/perception1.png" alt="Perception output 1" width="360">
       <br>
-      <em>SLAM and autonomous navigation</em>
+      <em>Perception output: flower detection.</em>
     </td>
     <td align="center">
-      <img src="media/ui_demo.png" alt="SimBioSys UI" width="360">
+      <img src="media/perception2.png" alt="Perception output 2" width="360">
       <br>
-      <em>Operator UI and plant-bed status</em>
+      <em>Bug detection.</em>
     </td>
   </tr>
+</table>
+
+### Operator UI
+
+<table>
   <tr>
     <td align="center">
-      <img src="media/perception_boxes.png" alt="Perception bounding boxes" width="360">
+      <img src="media/UI1.png" alt="Operator UI view 1" width="300">
       <br>
-      <em>Flower / bug perception output</em>
+      <em>Main operator dashboard overview.</em>
     </td>
     <td align="center">
-      <img src="media/flower_picking.gif" alt="Flower picking demo" width="360">
+      <img src="media/UI2.png" alt="Operator UI view 2" width="300">
       <br>
-      <em>Arm and gripper prototype behavior</em>
+      <em>Teleoperation and live robot camera.</em>
+    </td>
+    <td align="center">
+      <img src="media/UI3.png" alt="Operator UI view 3" width="300">
+      <br>
+      <em>Plant-bed status view.</em>
+    </td>
+  </tr>
+</table>
+
+### Flower Picking
+
+<table>
+  <tr>
+    <td align="center">
+      <video src="media/arm_2x.mp4" width="520" controls muted loop playsinline>
+        Flower picking behavior demo.
+      </video>
+      <br>
+      <em>Flower picking behavior demo.</em>
     </td>
   </tr>
 </table>
@@ -76,6 +136,23 @@ More specifically, I worked on:
 
 This work formed the basis for the robot's ability to move safely between greenhouse locations and approach plant beds for inspection.
 
+<table>
+  <tr>
+    <td align="center">
+      <video src="media/2x.mp4" width="420" controls muted loop playsinline>
+        Robot navigation demo.
+      </video>
+      <br>
+      <em>Robot navigation demo.</em>
+    </td>
+    <td align="center">
+      <img src="media/SLAM.png" alt="SLAM map output" width="420">
+      <br>
+      <em>Generated SLAM map + localization + costmaps and checkpoints for navigation.</em>
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## System Architecture
@@ -92,28 +169,6 @@ The repository contains a modular ROS 2 workspace organized around project-speci
 | `simbiosys_arm`        | Arm and gripper wrappers for MIRTE manipulation                                  |
 | `simbiosys_ui`         | Operator interface and dummy dashboard mode                                      |
 | `simbiosys_bringup`    | Launch files and configuration for simulation, UI, mapping, and real-robot modes |
-
-<p align="center">
-  <img src="media/system_architecture.png" alt="SimBioSys system architecture" width="700">
-  <br>
-  <em>System-level ROS architecture and module interaction.</em>
-</p>
-
----
-
-## Core Technologies
-
-* ROS 2
-* Python
-* Pixi
-* colcon
-* MIRTE Master
-* SLAM Toolbox
-* Nav2
-* AMCL
-* MoveIt2
-* OpenCV / cv_bridge
-* LiDAR, RGB-D camera, odometry, TF
 
 ---
 
@@ -261,40 +316,3 @@ Safe named arm-pose service call:
 ```bash
 ros2 service call /simbiosys/send_named_arm_pose simbiosys_interfaces/srv/SendNamedArmPose "{pose_name: home}"
 ```
-
----
-
-## Report
-
-A detailed project report is available here:
-
-[Project report](docs/project_report.pdf)
-
----
-
-## Suggested Media to Keep
-
-For a concise portfolio README, the most useful media are:
-
-1. **Robot demo GIF/video**
-   Show the real MIRTE robot moving, navigating, or executing a task.
-
-2. **SLAM/Nav2 map screenshot**
-   Show the map, costmap, planned path, or RViz navigation output.
-
-3. **UI screenshot**
-   Show the digital-twin dashboard, plant-bed grid, status view, or operator controls.
-
-4. **Perception output**
-   Show flower, bug, or plant detections with bounding boxes.
-
-5. **System architecture diagram**
-   Use only one high-level architecture figure, preferably the ROS node architecture or functional-flow diagram.
-
-Avoid adding too many report screenshots, tables, internal TODO lists, or long course-template sections. The README should show what the system does, how to run it, and what you contributed.
-
----
-
-## Disclaimer
-
-This repository is a public portfolio version of a TU Delft robotics project. Some hardware-specific files, private course infrastructure, datasets, or university-specific resources may not be included. The repository is intended to document the project architecture, implementation approach, and my contribution to the SLAM and navigation components of the system.
