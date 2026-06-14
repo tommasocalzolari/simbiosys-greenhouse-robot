@@ -141,7 +141,7 @@ This work formed the basis for the robot's ability to move safely between greenh
 <table>
   <tr>
     <td align="center">
-      <img src="media/Screenshot%20from%202026-06-09%2016-04-58.png" alt="Map obtained using SLAM" width="420">
+      <img src="media/map.png" alt="Map obtained using SLAM" width="420">
       <br>
       <em>Map obtained using SLAM.</em>
     </td>
