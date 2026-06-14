@@ -1,237 +1,131 @@
-# SimBioSys MIRTE ROS 2 Workspace
+# SimBioSys: Autonomous Greenhouse Robot
 
-Official Group 06 repository for the SimBioSys ROS 2 workspace.
+ROS 2-based greenhouse robotics system for autonomous navigation, plant-health monitoring, operator interaction, and mobile manipulation on the MIRTE Master platform.
 
-This repository keeps the Pixi/colcon MIRTE workspace setup from the course
-template and adds our `simbiosys_*` packages on top. The project direction is
-reuse-first: our code should wrap and coordinate existing MIRTE and ROS 2
-packages instead of replacing them.
+<p align="center">
+  <img src="media/robot_demo.gif" alt="SimBioSys robot demo" width="650">
+  <br>
+  <em>SimBioSys performing autonomous greenhouse inspection and navigation.</em>
+</p>
 
-## Reuse-First MIRTE Strategy
+---
 
-We reuse:
+## Overview
 
-- MIRTE Gazebo for simulation.
-- MIRTE ros2_control topics/actions for base, arm, and gripper control.
-- `slam_toolbox` for SLAM.
-- `nav2_map_server` and `map_saver_cli` for map saving.
-- `teleop_twist_keyboard` for manual driving.
-- MIRTE MoveIt config when arm planning is needed.
+**SimBioSys** is an autonomous greenhouse robot developed for the TU Delft RO47007 Multidisciplinary Project. The system is designed to help monitor tulip beds by combining autonomous navigation, plant perception, digital-twin-style visualization, and operator supervision.
 
-Do not copy `mirte-documentation` into this repo. Use it only as documentation
-and reference.
+The robot is built around the **MIRTE Master** platform and follows a reuse-first ROS 2 architecture: instead of replacing existing robotics stacks, the system coordinates established tools such as **SLAM Toolbox**, **Nav2**, **AMCL**, **MoveIt2**, OpenCV, and the MIRTE hardware interfaces.
 
-## Usage Modes
+The project goal was to build a practical mobile robot prototype able to:
 
-### 1. Simulation Mode
+* navigate through a greenhouse environment;
+* build and use maps for autonomous operation;
+* inspect plant beds and collect plant-health information;
+* display robot and plant data through a user interface;
+* support teleoperation and operator feedback;
+* prepare the system architecture for flower picking and harvesting behavior.
 
-Runs the MIRTE Master Gazebo simulation when `mirte_gazebo` is installed.
+---
 
-```bash
-pixi shell
-colcon build
-source install/setup.bash
-ros2 launch simbiosys_bringup simulation_mirte_master.launch.py
-```
+## Demo Media
 
-### 2. Real Robot Laptop-Side Mode
+Recommended media to add to this section:
 
-Run low-level MIRTE bringup on the robot, then run our laptop-side shell.
+<table>
+  <tr>
+    <td align="center">
+      <img src="media/slam_navigation.gif" alt="SLAM and navigation demo" width="360">
+      <br>
+      <em>SLAM and autonomous navigation</em>
+    </td>
+    <td align="center">
+      <img src="media/ui_demo.png" alt="SimBioSys UI" width="360">
+      <br>
+      <em>Operator UI and plant-bed status</em>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="media/perception_boxes.png" alt="Perception bounding boxes" width="360">
+      <br>
+      <em>Flower / bug perception output</em>
+    </td>
+    <td align="center">
+      <img src="media/flower_picking.gif" alt="Flower picking demo" width="360">
+      <br>
+      <em>Arm and gripper prototype behavior</em>
+    </td>
+  </tr>
+</table>
 
-```bash
-source install/setup.bash
-ros2 launch simbiosys_bringup laptop_system.launch.py
-```
+---
 
-This does not launch robot hardware bringup.
+## My Contribution: SLAM and Navigation
 
-### 3. Dummy Development Mode
+My main contribution focused on the **mapping, localization, and navigation stack** for the mobile base.
 
-Runs the terminal UI with fake dashboard data.
+More specifically, I worked on:
 
-```bash
-source install/setup.bash
-ros2 launch simbiosys_bringup ui_system.launch.py
-```
+* setting up and testing **SLAM Toolbox** for map creation;
+* integrating saved maps with **Nav2 Map Server**;
+* configuring localization with **AMCL**;
+* validating the robot's odometry, LiDAR, and TF frames;
+* testing autonomous navigation goals on the MIRTE platform;
+* supporting the integration between mapping, navigation, and higher-level mission behavior;
+* keeping the navigation stack compatible with both simulation and real-robot operation.
 
-## Package Overview
+This work formed the basis for the robot's ability to move safely between greenhouse locations and approach plant beds for inspection.
 
-| Package | Purpose |
-| --- | --- |
-| `simbiosys_interfaces` | Custom messages, services, and actions |
-| `simbiosys_behavior` | Behavior coordinator, mode state, Nav2 goal wrapper, status topics, and harvest flag |
-| `simbiosys_perception` | Lightweight flower detection placeholder and future perception hooks |
-| `simbiosys_mapping` | `slam_toolbox` config and mapping topic status helper |
-| `simbiosys_base` | High-level base/path placeholders |
-| `simbiosys_arm` | Wrappers for MIRTE joint states, arm trajectory topic, and gripper action |
-| `simbiosys_ui` | Terminal status UI and dummy dashboard data |
-| `simbiosys_bringup` | Launch files and topic config for the three modes |
+---
 
-## Current Behavior System
+## System Architecture
 
-The behavior layer is now a thin coordinator in `simbiosys_behavior`. It does
-not replace SLAM, Nav2, perception, arm control, or the UI. It accepts behavior
-requests, checks whether required topics/actions are alive, publishes status,
-and delegates work to the existing robot stacks.
+The repository contains a modular ROS 2 workspace organized around project-specific `simbiosys_*` packages.
 
-### General Topics And Services
+| Package                | Purpose                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `simbiosys_interfaces` | Custom messages, services, and actions                                           |
+| `simbiosys_behavior`   | Mission coordinator, behavior requests, status topics, and Nav2 goal wrapper     |
+| `simbiosys_mapping`    | SLAM Toolbox configuration, mapping helpers, and map-related utilities           |
+| `simbiosys_base`       | Base-motion and path-planning utilities                                          |
+| `simbiosys_perception` | Flower, plant, and bug perception components                                     |
+| `simbiosys_arm`        | Arm and gripper wrappers for MIRTE manipulation                                  |
+| `simbiosys_ui`         | Operator interface and dummy dashboard mode                                      |
+| `simbiosys_bringup`    | Launch files and configuration for simulation, UI, mapping, and real-robot modes |
 
-| Purpose | Interface | Current owner | Status |
-| --- | --- | --- | --- |
-| Behavior command | `simbiosys/execute_behavior` action | `mission_manager_node` | Usable for mode changes and Nav2 navigation. Scan/harvest return `NOT_IMPLEMENTED` until wired. |
-| General task status | `simbiosys/task_status` | `mission_manager_node` | Usable. Publishes current mission state and harvest flag. |
-| Navigation status | `simbiosys/navigation_status` | `mission_manager_node` | Usable. Publishes phase, latest pose/path when available, target, progress, and error text. |
-| Scan progress | `simbiosys/scan_progress` | `mission_manager_node` for now | Contract exists. Real scan executor is still TODO. |
-| Harvest status | `simbiosys/harvest_status` | `mission_manager_node` for now | Contract exists. Physical harvest executor is still TODO. |
-| Harvest flag set/get | `simbiosys/set_harvest_enabled`, `simbiosys/get_harvest_enabled` | `mission_manager_node` | Usable. Defaults to disabled. |
-| Robot mode set | `simbiosys/set_robot_mode` | `mission_manager_node` | Usable compatibility service. |
-| Plant health | `simbiosys/plant_health` | perception/analysis nodes | Usable typed topic; UI keeps legacy JSON fallback. |
-| Bed observation | `simbiosys/bed_observation` | AprilTag perception | Usable typed topic. |
-| Mapping status | `simbiosys/mapping_status` | mapping status node | Usable topic health helper. |
+<p align="center">
+  <img src="media/system_architecture.png" alt="SimBioSys system architecture" width="700">
+  <br>
+  <em>System-level ROS architecture and module interaction.</em>
+</p>
 
-The real robot topic defaults remain:
+---
 
-| Capability | Default |
-| --- | --- |
-| Base velocity | `/mirte_base_controller/cmd_vel` |
-| Odometry | `/mirte_base_controller/odom` |
-| LiDAR | `/scan` |
-| Map | `/map` |
-| Color camera | `/camera/color/image_raw` |
-| Depth camera | `/camera/depth/image_raw` |
-| Depth point cloud | `/camera/depth/points` |
-| Gripper camera | `/gripper_camera/image_raw` |
-| Joint states | `/joint_states` |
-| Arm trajectory | `/mirte_master_arm_controller/joint_trajectory` |
-| Arm FollowJointTrajectory action | `/mirte_master_arm_controller/follow_joint_trajectory` |
-| Gripper action | `/mirte_master_gripper_controller/gripper_cmd` |
+## Core Technologies
 
-Simulation keeps separate launch/config defaults, especially
-`/mirte_base_controller/cmd_vel_unstamped` and `/odom`. Keep using launch args
-or config files instead of hard-coding topic names in behavior code.
+* ROS 2
+* Python
+* Pixi
+* colcon
+* MIRTE Master
+* SLAM Toolbox
+* Nav2
+* AMCL
+* MoveIt2
+* OpenCV / cv_bridge
+* LiDAR, RGB-D camera, odometry, TF
 
-Real robot TF notes from the May 2026 smoke test:
-
-- `/mirte_base_controller/odom` uses `frame_id: odom` and
-  `child_frame_id: base_link`.
-- `/scan` publishes `frame_id: laser`.
-- The main camera topics use `camera_color_optical_frame` and
-  `camera_depth_optical_frame`.
-- Before SLAM, localization, Nav2, or perception work, verify that the sensor
-  frames resolve from `base_link`:
-
-```bash
-ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo base_link laser
-ros2 run tf2_ros tf2_echo base_link camera_link
-```
-
-### Behavior Commands
-
-| BehaviorType | What works now | What is still TODO |
-| --- | --- | --- |
-| `IDLE` | Cancels active Nav2 work when present, publishes zero velocity, enters idle. | Add arm-safe idle once arm behavior is integrated. |
-| `TELEOP` | Sets mission state to teleop. | Safe teleop arbiter is still TODO; UI currently publishes velocity directly. |
-| `MAP` | Sets mapping mode and checks scan/odom/map topics. | Finish-map command, bed annotation, cleanup, and metadata save are TODO. |
-| `LOCALIZE` | Checks scan/odom/map and waits for `/amcl_pose`. | Initial-pose workflow remains external/RViz or launch driven. |
-| `NAVIGATE` | Sends a Nav2 `NavigateToPose` goal from `target_pose`, with cancel and status. | Bed-ID approach pose from metadata is TODO. |
-| `INSPECT_BED` | Accepts debug bed-side targets like `bed_1:a` and delegates to the dry-run-safe bed-side controller action. | Real metadata endpoint lookup, perception-driven servoing, and physical motion remain TODO. |
-| `INSPECT_FLOWER` | Validates `target_id` and publishes scan status. | Single-position scan execution is TODO and currently returns `NOT_IMPLEMENTED`. |
-| `HARVEST` | Enforces `harvest_enabled`; rejects while disabled. | Physical harvest is TODO and currently returns `NOT_IMPLEMENTED` even when enabled. |
-| `ARM_TEST` | Preserves existing mode mapping. | Arm-specific execution remains in `simbiosys_arm`. |
-
-Use `NAVIGATE` only after localization and Nav2 are launched. The behavior
-manager does not start Nav2 for you; launch files still own system startup.
-
-### Typed Metadata Contracts
-
-These interfaces exist now and are intended for the next implementation slices:
-
-- `BedRectangle.msg`: map-frame bed rectangle and AprilTag association.
-- `ScanPosition.msg`: map-frame base pose. Reused for V1 bed-side `start` and
-  `end` route endpoints such as `bed_1:a:start`.
-- `MapMetadata.msg`: active map, cleaned map, beds, and scan positions.
-- Metadata services: `SaveMapWithMetadata`, `LoadMapMetadata`,
-  `UpsertBedRectangle`, `DeleteBedRectangle`, `SetScanPositions`, `CleanupMap`.
-
-Important: the metadata services are contracts only right now. They are not yet
-implemented by `simbiosys_mapping`. Teammates can implement those services
-against YAML files under `maps/<map_id>/` without changing the behavior action
-again.
-
-### Team TODOs
-
-Keep the next work in thin vertical slices. The behavior action and typed
-metadata/status interfaces are already in place, so each area can integrate
-against those contracts without changing the action payload immediately.
-
-#### Arm Planning
-
-- Validate named poses on the real robot: `scan`, `grab`, `remove`,
-  `container_drop`, and `stow`.
-- Keep the existing `SendNamedArmPose` service as the safe debug entry point.
-- Report arm command success/failure clearly enough for behavior status and UI.
-- Do non-cutting dry runs before connecting any physical harvest sequence.
-
-#### Base Planning
-
-- Verify `odom -> base_link`, `base_link -> laser`, and
-  `base_link -> camera_link` before SLAM/Nav2 tests.
-- Keep real robot defaults on `/mirte_base_controller/cmd_vel`,
-  `/mirte_base_controller/odom`, and `/scan`; use launch args for simulation
-  differences.
-- Bring up SLAM/localization/Nav2 outside the behavior manager.
-- Add bed approach pose computation from map metadata before full bed scanning.
-- Do not add a custom global planner unless Nav2 is proven insufficient.
-
-#### Perception
-
-- Publish typed `simbiosys/plant_health` updates while keeping the legacy UI
-  fallback until the UI is fully migrated.
-- Use the real camera topics by default:
-  `/camera/color/image_raw`, `/camera/depth/image_raw`, and
-  `/gripper_camera/image_raw`.
-- Include active bed, flower, and scan-position context in detection results.
-- Report missed detections explicitly so scan behavior can retry or skip.
-
-#### UI
-
-- Connect UI commands to `simbiosys/execute_behavior`.
-- Display `simbiosys/task_status`, `simbiosys/navigation_status`,
-  `simbiosys/scan_progress`, and `simbiosys/harvest_status`.
-- Add map annotation, scan-position editing, and cleanup controls around the
-  typed metadata services.
-- Keep dummy mode useful without a robot, Gazebo, Nav2, or camera data.
-
-#### Behavior, Scheduling, And Interfaces
-
-- Keep `mission_manager_node` as a thin coordinator; launch files own SLAM,
-  localization, Nav2, perception, arm, gripper, and UI startup.
-- Implement metadata read/write services in `simbiosys_mapping`.
-- Add `ExecuteBehavior(NAVIGATE, target_id=<bed_id>)` by resolving bed approach
-  poses from metadata.
-- Grow the bed-side controller from dry-run scaffold to perception-driven
-  distance/orientation/arm-height control.
-- Keep `HARVEST` gated by `harvest_enabled` and returning `NOT_IMPLEMENTED`
-  until scan results and arm/gripper poses are validated on the real robot.
-
-Avoid adding a custom planner, automatic map cleanup, or a large new behavior
-action payload until the current contracts are exercised by real callers.
-
-See [Behavior API Examples](docs/behavior_api_examples.md) for command-line
-smoke tests and [Behavior System](docs/behavior_sequences_simbiosys.md) for the
-full implementation direction.
+---
 
 ## Setup
 
-If you do not have Pixi, install it from the
-[Pixi installation guide](https://pixi.prefix.dev/latest/installation/).
+Install [Pixi](https://pixi.sh/latest/) if it is not already available.
 
-Clone this repository:
+Clone the repository:
 
 ```bash
-git clone https://gitlab.tudelft.nl/cor/ro47007/2026/group_06/main-simbiosys.git $HOME/ro47007_mirte_ws
-cd $HOME/ro47007_mirte_ws
+git clone https://github.com/tommasocalzolari/simbiosys-greenhouse-robot.git
+cd simbiosys-greenhouse-robot
 ```
 
 Install the Pixi environment:
@@ -240,28 +134,13 @@ Install the Pixi environment:
 pixi install
 ```
 
-Enter the Pixi shell as its own command. Wait until the prompt changes, for
-example to `(ro47007_mirte_ws)`, before running build or ROS commands:
+Enter the Pixi shell:
 
 ```bash
 pixi shell
 ```
 
-Then run the workspace commands inside that Pixi shell:
-
-```bash
-rm -rf build install log
-colcon build
-source install/setup.bash
-```
-
-Check that the generated SimBioSys interfaces are visible:
-
-```bash
-ros2 interface show simbiosys_interfaces/srv/SendNamedArmPose
-```
-
-Fetch the MIRTE/ROS package repositories listed in `repos.repos`:
+Fetch the external MIRTE/ROS repositories listed in `repos.repos`:
 
 ```bash
 pixi run vcs import --input repos.repos src
@@ -273,7 +152,7 @@ Ignore MIRTE packages that are not needed for this laptop-side workspace:
 touch src/mirte-ros-packages/mirte_{bringup,telemetrix_cpp,teleop,test,zenoh_setup}/COLCON_IGNORE
 ```
 
-Build:
+Install dependencies and build:
 
 ```bash
 rosdep install --from-paths src --ignore-src -r -y
@@ -281,77 +160,64 @@ colcon build
 source install/setup.bash
 ```
 
-Run the commands above after entering `pixi shell`; do not paste `pixi shell`
-and the later commands as one batch if your terminal does not wait for the new
-Pixi shell to start.
-
-Clean build artifacts when needed:
+Check that the custom interfaces are available:
 
 ```bash
-pixi run ws-clean
-pixi run clean-build
+ros2 interface show simbiosys_interfaces/srv/SendNamedArmPose
 ```
 
-## Quickstart Commands
+---
 
-Teleop:
+## Running the System
 
-```bash
-ros2 launch simbiosys_bringup teleop_system.launch.py
-```
+### Dummy UI Mode
 
-Mapping:
-
-```bash
-ros2 launch simbiosys_bringup mapping_system.launch.py
-```
-
-Arm wrapper test:
-
-```bash
-ros2 launch simbiosys_bringup arm_test.launch.py
-```
-
-In another Pixi shell, source the workspace and call the safe wrapper service:
+Runs the terminal UI with fake dashboard data. Useful for development without the robot, Gazebo, Nav2, or cameras.
 
 ```bash
 source install/setup.bash
-export ROS_LOCALHOST_ONLY=0
-ros2 service call /simbiosys/send_named_arm_pose simbiosys_interfaces/srv/SendNamedArmPose "{pose_name: home}"
+ros2 launch simbiosys_bringup ui_system.launch.py
 ```
 
-MIRTE MoveIt, when installed:
+### Simulation Mode
+
+Runs the MIRTE Master Gazebo simulation when the simulation packages are available.
 
 ```bash
-ros2 launch mirte_moveit_config mirte_moveit.launch.py use_sim_time:=True
+source install/setup.bash
+ros2 launch simbiosys_bringup simulation_mirte_master.launch.py
 ```
 
-## Physical Robot
+### Mapping Mode
 
-Connect to the MIRTE Master via Wi-Fi AP or Ethernet. On the robot, set the ROS
-domain id and restart ROS:
+Starts the mapping stack for building a map from LiDAR and odometry.
 
 ```bash
+source install/setup.bash
+ros2 launch simbiosys_bringup mapping_system.launch.py
+```
+
+### Teleoperation
+
+Starts the teleoperation system.
+
+```bash
+source install/setup.bash
+ros2 launch simbiosys_bringup teleop_system.launch.py
+```
+
+### Real Robot Laptop-Side Mode
+
+Run the low-level MIRTE bringup on the robot first. Then, on the laptop:
+
+```bash
+source install/setup.bash
 export ROS_DOMAIN_ID=1
-sudo service mirte-ros restart
-```
-
-In each laptop Pixi shell, use the same domain id and allow network discovery:
-
-```bash
-export ROS_DOMAIN_ID=1
 export ROS_LOCALHOST_ONLY=0
-ros2 daemon stop
-ros2 daemon start
+ros2 launch simbiosys_bringup laptop_system.launch.py
 ```
 
-Verify that robot topics are visible:
-
-```bash
-ros2 topic list
-```
-
-## Topic Verification Checklist
+Verify that the robot topics are visible:
 
 ```bash
 ros2 topic list
@@ -359,60 +225,76 @@ ros2 topic echo /joint_states --once
 ros2 topic echo /scan --once
 ros2 topic echo /mirte_base_controller/odom --once
 ros2 topic echo /camera/color/image_raw --once
+```
+
+Check the main TF frames:
+
+```bash
 ros2 run tf2_ros tf2_echo odom base_link
 ros2 run tf2_ros tf2_echo base_link laser
 ros2 run tf2_ros tf2_echo base_link camera_link
-ros2 run tf2_tools view_frames
-ros2 action list
 ```
 
-Important default interfaces:
+---
 
-| Purpose | Topic or Action |
-| --- | --- |
-| Base velocity | `/mirte_base_controller/cmd_vel` |
-| Odometry | `/mirte_base_controller/odom` |
-| Main color image | `/camera/color/image_raw` |
-| Depth image | `/camera/depth/image_raw` |
-| Gripper camera image | `/gripper_camera/image_raw` |
-| Arm trajectory | `/mirte_master_arm_controller/joint_trajectory` |
-| Arm FollowJointTrajectory action | `/mirte_master_arm_controller/follow_joint_trajectory` |
-| Gripper action | `/mirte_master_gripper_controller/gripper_cmd` |
-
-Topic config lives in:
-
-```text
-src/simbiosys_bringup/config/real_robot_topics.yaml
-src/simbiosys_bringup/config/simulation_topics.yaml
-```
-
-## Team Workflow
-
-Branch from `main`, do not push directly to `main`, and use merge requests.
+## Useful Launch Commands
 
 ```bash
-git switch main
-git pull
-git switch -c feature/<short-description>
+# UI only
+ros2 launch simbiosys_bringup ui_system.launch.py
+
+# Teleoperation
+ros2 launch simbiosys_bringup teleop_system.launch.py
+
+# Mapping
+ros2 launch simbiosys_bringup mapping_system.launch.py
+
+# Real robot laptop-side system
+ros2 launch simbiosys_bringup laptop_system.launch.py
+
+# Arm wrapper test
+ros2 launch simbiosys_bringup arm_test.launch.py
 ```
 
-Before opening a merge request, build locally and mention any manual robot or
-simulation steps you used.
+Safe named arm-pose service call:
 
-More practical notes are in [docs/](docs/README.md).
+```bash
+ros2 service call /simbiosys/send_named_arm_pose simbiosys_interfaces/srv/SendNamedArmPose "{pose_name: home}"
+```
 
-## Troubleshooting
+---
 
-- Python build problems: fully deactivate Anaconda or other virtual Python
-  environment managers before setting up this repository.
-- Shells other than Bash: source the matching setup file in `install`, such as
-  `setup.zsh`.
-- macOS blocked binaries: approve the Pixi-installed binary in System Settings,
-  then rerun the command.
-- Build problems: inspect the failing package output and use a clean build when
-  cache state is suspicious.
-- Pixi environment problems: run `pixi clean`, then `pixi install`.
-- Missing packages in Pixi: add available ROS packages with commands such as
-  `pixi add ros-humble-turtlesim`.
-- Inconsistent group results: compare `git diff` and keep `pixi.lock` shared so
-  everyone installs the same dependency versions.
+## Report
+
+A detailed project report is available here:
+
+[Project report](docs/project_report.pdf)
+
+---
+
+## Suggested Media to Keep
+
+For a concise portfolio README, the most useful media are:
+
+1. **Robot demo GIF/video**
+   Show the real MIRTE robot moving, navigating, or executing a task.
+
+2. **SLAM/Nav2 map screenshot**
+   Show the map, costmap, planned path, or RViz navigation output.
+
+3. **UI screenshot**
+   Show the digital-twin dashboard, plant-bed grid, status view, or operator controls.
+
+4. **Perception output**
+   Show flower, bug, or plant detections with bounding boxes.
+
+5. **System architecture diagram**
+   Use only one high-level architecture figure, preferably the ROS node architecture or functional-flow diagram.
+
+Avoid adding too many report screenshots, tables, internal TODO lists, or long course-template sections. The README should show what the system does, how to run it, and what you contributed.
+
+---
+
+## Disclaimer
+
+This repository is a public portfolio version of a TU Delft robotics project. Some hardware-specific files, private course infrastructure, datasets, or university-specific resources may not be included. The repository is intended to document the project architecture, implementation approach, and my contribution to the SLAM and navigation components of the system.
