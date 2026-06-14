@@ -69,7 +69,7 @@ The project goal was to build a practical mobile robot prototype able to:
 
 ---
 
-## Functional Flow
+## Functional Flow Diagram
 
 <p align="center">
   <img src="media/updated_functional_flow.png" alt="SimBioSys functional flow chart" width="850">
@@ -154,16 +154,16 @@ This work formed the basis for the robot's ability to move safely between greenh
 
 The repository contains a modular ROS 2 workspace organized around project-specific `simbiosys_*` packages.
 
-| Package                | Purpose                                                                          |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `simbiosys_interfaces` | Custom messages, services, and actions                                           |
-| `simbiosys_behavior`   | Mission coordinator, behavior requests, status topics, and Nav2 goal wrapper     |
-| `simbiosys_mapping`    | SLAM Toolbox configuration, mapping helpers, and map-related utilities           |
-| `simbiosys_base`       | Base-motion and path-planning utilities                                          |
-| `simbiosys_perception` | Flower, plant, and bug perception components                                     |
-| `simbiosys_arm`        | Arm and gripper wrappers for MIRTE manipulation                                  |
-| `simbiosys_ui`         | Operator interface and dummy dashboard mode                                      |
-| `simbiosys_bringup`    | Launch files and configuration for simulation, UI, mapping, and real-robot modes |
+| Package                | Purpose                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `simbiosys_interfaces` | Custom messages, services, and actions                                                 |
+| `simbiosys_behavior`   | Mission coordinator, behavior requests, status topics, and Nav2 goal wrapper           |
+| `simbiosys_mapping`    | SLAM Toolbox configuration, mapping helpers, amcl localization and navigation stack    |
+| `simbiosys_base`       | Base-motion helper nodes                                                               |
+| `simbiosys_perception` | Flower, plant, and bug perception components                                           |
+| `simbiosys_arm`        | Arm and gripper wrappers for MIRTE manipulation                                        |
+| `simbiosys_ui`         | Operator interface and dummy dashboard mode                                            | 
+| `simbiosys_bringup`    | Launch files and configuration for simulation, UI, mapping, and real-robot modes       |
 
 ---
 
