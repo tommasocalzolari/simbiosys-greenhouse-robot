@@ -5,18 +5,12 @@ ROS 2-based greenhouse robotics system for autonomous navigation, plant-health m
 <table>
   <tr>
     <td align="center" width="50%">
-      <video width="100%" controls muted loop playsinline>
-        <source src="media/2x.mp4" type="video/mp4">
-        <a href="media/2x.mp4">Open the robot navigation demo video.</a>
-      </video>
+      <img src="media/2x.gif" alt="Robot navigation demo" width="100%">
       <br>
       <em>Robot navigation demo.</em>
     </td>
     <td align="center" width="50%">
-      <video width="100%" controls muted loop playsinline>
-        <source src="media/arm_2x.mp4" type="video/mp4">
-        <a href="media/arm_2x.mp4">Open the flower picking demo video.</a>
-      </video>
+      <img src="media/arm_2x.gif" alt="Flower picking behavior demo" width="100%">
       <br>
       <em>Flower picking behavior demo.</em>
     </td>
