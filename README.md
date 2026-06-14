@@ -2,11 +2,26 @@
 
 ROS 2-based greenhouse robotics system for autonomous navigation, plant-health monitoring, operator interaction, and mobile manipulation on the MIRTE Master platform.
 
-<p align="center">
-  <img src="media/MIRTEMasterV2.jpg" alt="The MIRTE Master V2" width="650">
-  <br>
-  <em>The MIRTE Master V2</em>
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <video width="100%" controls muted loop playsinline>
+        <source src="media/2x.mp4" type="video/mp4">
+        <a href="media/2x.mp4">Open the robot navigation demo video.</a>
+      </video>
+      <br>
+      <em>Robot navigation demo.</em>
+    </td>
+    <td align="center" width="50%">
+      <video width="100%" controls muted loop playsinline>
+        <source src="media/arm_2x.mp4" type="video/mp4">
+        <a href="media/arm_2x.mp4">Open the flower picking demo video.</a>
+      </video>
+      <br>
+      <em>Flower picking behavior demo.</em>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -21,15 +36,22 @@ ROS 2-based greenhouse robotics system for autonomous navigation, plant-health m
 
 | Name              | Student Number |
 |-------------------|----------------|
-| Raaf ter Woerds   | 5368537        |
-| Tommaso Calzolari | 6430600        |
-| Olivier Boertje   | 5407346        |
-| Luca Sackmann     | 6376754        |
-| Mark Soldaat      | 5398118        |
+| Raaf ter Woerds   |    5368537     |
+| Tommaso Calzolari |    6430600     |
+| Olivier Boertje   |    5407346     |
+| Luca Sackmann     |    6376754     |
+| Mark Soldaat      |    5398118     |
 
   </td>
-  <td style="vertical-align: middle; padding-left: 20px;">
-    <img src="media/SimBioSys_logov2.png" alt="Group logo" height="180"/>
+  <td align="center" style="vertical-align: middle; padding-left: 20px;">
+    <img src="media/MIRTEMasterV2.jpg" alt="The MIRTE Master V2" height="180"/>
+    <br>
+    <em>The MIRTE Master V2</em>
+  </td>
+  <td align="center" style="vertical-align: middle; padding-left: 20px;">
+    <img src="media/SimBioSys_logov2.png" alt="SimBioSys team logo" height="180"/>
+    <br>
+    <em>SimBioSys team logo</em>
   </td>
   </tr>
 </table>
@@ -104,20 +126,6 @@ The project goal was to build a practical mobile robot prototype able to:
   </tr>
 </table>
 
-### Flower Picking
-
-<table>
-  <tr>
-    <td align="center">
-      <video src="media/arm_2x.mp4" width="520" controls muted loop playsinline>
-        Flower picking behavior demo.
-      </video>
-      <br>
-      <em>Flower picking behavior demo.</em>
-    </td>
-  </tr>
-</table>
-
 ---
 
 ## My Contribution: SLAM and Navigation
@@ -138,13 +146,6 @@ This work formed the basis for the robot's ability to move safely between greenh
 
 <table>
   <tr>
-    <td align="center">
-      <video src="media/2x.mp4" width="420" controls muted loop playsinline>
-        Robot navigation demo.
-      </video>
-      <br>
-      <em>Robot navigation demo.</em>
-    </td>
     <td align="center">
       <img src="media/SLAM.png" alt="SLAM map output" width="420">
       <br>
