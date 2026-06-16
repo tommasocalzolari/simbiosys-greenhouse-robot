@@ -124,19 +124,11 @@ The project goal was to build a practical mobile robot prototype able to:
 
 ## My Contribution: SLAM and Navigation
 
-My main contribution focused on the **mapping, localization, and navigation stack** for the mobile base.
+My main contribution focused on the **mapping, localization, and navigation stack** for the mobile base. I worked on enabling the robot to build an occupancy-grid map of the greenhouse environment using **SLAM Toolbox**, tune the mapping parameters for the specific indoor setup, and create reliable maps by slowly driving the robot through the environment to support loop closure. After mapping, I also performed manual map post-processing to make the resulting map suitable for autonomous navigation.
 
-More specifically, I worked on:
+For navigation, I integrated the map with the **Nav2 stack**, using **AMCL** for localization, **SmacPlanner2D** as the global planner, and the **DWB local controller** as a local controller. The navigation behavior was designed so that the robot first aligns with the planned path and then follows it toward manually annotated greenhouse checkpoints. These checkpoints are triggered by the higher-level mission manager, allowing navigation to be integrated with the rest of the inspection and plant-monitoring pipeline.
 
-* setting up and testing **SLAM Toolbox** for map creation;
-* integrating saved maps with **Nav2 Map Server**;
-* configuring localization with **AMCL**;
-* validating the robot's odometry, LiDAR, and TF frames;
-* testing autonomous navigation goals on the MIRTE platform;
-* supporting the integration between mapping, navigation, and higher-level mission behavior;
-* keeping the navigation stack compatible with both simulation and real-robot operation.
-
-This work formed the basis for the robot's ability to move safely between greenhouse locations and approach plant beds for inspection.
+I also tested and tuned the navigation behavior on the real MIRTE robot, including LiDAR, odometry, TF frames, costmaps, and recovery behavior. A simple safety behavior was included so that the robot can back up when needed, improving robustness during operation in constrained greenhouse-like environments.
 
 <table>
   <tr>
