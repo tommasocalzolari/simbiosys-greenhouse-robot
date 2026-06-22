@@ -72,7 +72,7 @@ The project goal was to build a practical mobile robot prototype able to:
 ## Functional Flow Diagram
 
 <p align="center">
-  <img src="media/updated_functional_flow.png" alt="SimBioSys functional flow chart" width="850">
+  <img src="media/functional_flow.png" alt="SimBioSys functional flow chart" width="850">
   <br>
   <em>Functional flow of the SimBioSys greenhouse robot system.</em>
 </p>
